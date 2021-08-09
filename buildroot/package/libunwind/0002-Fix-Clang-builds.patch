@@ -1,0 +1,32 @@
+From 077cf12d0cc64e3d0a9b2d889d78d47e501aab1c Mon Sep 17 00:00:00 2001
+From: Florian Fainelli <f.fainelli@gmail.com>
+Date: Mon, 1 Feb 2021 15:00:16 -0800
+Subject: [PATCH] Fix Clang builds
+
+While cross-compiling strace against libunwind for ARM, the configure
+script of strace failed with:
+
+libunwind-ptrace.h:40:27: error: a parameter list without types is only
+allowed in a function definition
+
+it turns out that we do not have a definition for what pid_t should be,
+so include sys/types.h to remedy that.
+---
+ include/libunwind-ptrace.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/libunwind-ptrace.h b/include/libunwind-ptrace.h
+index 801325c4d4d0..916dbd246bf5 100644
+--- a/include/libunwind-ptrace.h
++++ b/include/libunwind-ptrace.h
+@@ -27,6 +27,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.  */
+ #define libunwind_ptrace_h
+ 
+ #include <libunwind.h>
++#include <sys/types.h>
+ 
+ #if defined(__cplusplus) || defined(c_plusplus)
+ extern "C" {
+-- 
+2.25.1
+

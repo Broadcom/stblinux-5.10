@@ -1,0 +1,31 @@
+From 188b2fa1a496ca3845a42cb5a176506bbbd214bd Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Fri, 12 Feb 2021 11:50:07 -0800
+Subject: [PATCH] include/buildrules: substitute ".o" for ".lo" only at the
+ very end
+
+To prevent issues when the ".o" extension appears in a directory path,
+ensure that the ".o" -> ".lo" substitution is only performed for the
+final file extension.
+
+Signed-off-by: Markus Mayer <mmayer@broadcom.com>
+---
+ include/buildrules | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/buildrules b/include/buildrules
+index 7a139ff07de8..f6663615d278 100644
+--- a/include/buildrules
++++ b/include/buildrules
+@@ -133,7 +133,7 @@ rmltdep:
+ 	$(Q)rm -f .ltdep
+ 
+ .ltdep: $(CFILES) $(HFILES)
+-	$(Q)$(MAKEDEP) $(CFILES) | $(SED) -e 's,^\([^:]*\)\.o,\1.lo,' > .ltdep
++	$(Q)$(MAKEDEP) $(CFILES) | $(SED) -e 's,^\([^:]*\)\.o: ,\1.lo: ,' > .ltdep
+ 
+ depend: rmdep .dep
+ 
+-- 
+2.25.1
+

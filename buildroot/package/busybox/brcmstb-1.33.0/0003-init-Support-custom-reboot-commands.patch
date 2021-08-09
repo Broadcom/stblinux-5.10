@@ -1,0 +1,88 @@
+From d5b56fd27da28f992d0bc19e878d4f38be19c360 Mon Sep 17 00:00:00 2001
+From: Florian Fainelli <florian.fainelli@broadcom.com>
+Date: Fri, 15 May 2020 13:10:35 -0700
+Subject: [PATCH] init: Support custom reboot commands
+
+It may be useful for some platforms to specify a reboot argument
+which is carried all the way to the kernel where an appropriate action
+can be taken. This includes specifying the entry into a platform defined
+recovery mode, or ensuring that a power management IC will power cycle
+the SoC.
+
+Signed-off-by: Florian Fainelli <florian.fainelli@broadcom.com>
+---
+ init/halt.c | 30 ++++++++++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/init/halt.c b/init/halt.c
+index fe3cb9e75357..3bf88d3370e1 100644
+--- a/init/halt.c
++++ b/init/halt.c
+@@ -65,7 +65,7 @@
+ //kbuild:lib-$(CONFIG_REBOOT) += halt.o
+ 
+ //usage:#define halt_trivial_usage
+-//usage:       "[-d DELAY] [-nf"IF_FEATURE_WTMP("w")"]"
++//usage:       "[-d DELAY] [-nf"IF_FEATURE_WTMP("w")"] [ARGS]"
+ //usage:#define halt_full_usage "\n\n"
+ //usage:       "Halt the system\n"
+ //usage:     "\n	-d SEC	Delay interval"
+@@ -93,6 +93,11 @@
+ 
+ #include "libbb.h"
+ #include "reboot.h"
++#include <sys/syscall.h>
++#ifdef __linux__
++#include <linux/reboot.h>
++#endif
++#include <signal.h>
+ 
+ #if ENABLE_FEATURE_WTMP
+ #include <sys/utsname.h>
+@@ -170,6 +175,9 @@ int halt_main(int argc UNUSED_PARAM, char **argv)
+ 		RB_AUTOBOOT
+ 	};
+ 	static const smallint signals[] = { SIGUSR1, SIGUSR2, SIGTERM };
++#ifdef __linux__
++	const char *reboot_cmd = NULL;
++#endif
+ 
+ 	int delay = 0;
+ 	int which, flags, rc;
+@@ -193,6 +201,17 @@ int halt_main(int argc UNUSED_PARAM, char **argv)
+ 	 * -i (shut down network interfaces) is ignored.
+ 	 */
+ 	flags = getopt32(argv, "d:+nfwi", &delay);
++#ifdef __linux__
++	argv += optind;
++
++	/* Force -f if we specified an argument as sending
++	 * the reboot command to init is a bit tricky.
++	 */
++	if (argv && argv[0]) {
++		reboot_cmd = argv[0];
++		flags |= 4;
++	}
++#endif
+ 
+ 	sleep(delay);
+ 
+@@ -240,7 +259,14 @@ int halt_main(int argc UNUSED_PARAM, char **argv)
+ 			}
+ 		}
+ 	} else {
+-		rc = reboot(magic[which]);
++#ifdef __linux__
++		if (reboot_cmd)
++			rc = syscall(SYS_reboot, LINUX_REBOOT_MAGIC1,
++				     LINUX_REBOOT_MAGIC2,
++				     LINUX_REBOOT_CMD_RESTART2, reboot_cmd);
++		else
++#endif
++			rc = reboot(magic[which]);
+ 	}
+ 
+ 	if (rc)
+-- 
+2.25.1
+

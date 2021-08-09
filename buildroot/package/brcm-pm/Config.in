@@ -1,0 +1,14 @@
+config BR2_BRCM_STB_TOOLS_VERSION
+	string "Broadcom STB tools version"
+	default 6b759aa1bff5
+	help
+	  Specify the git hash of the stbtools version you want to use. The
+	  hash can be abbreviated if it is unique.
+
+config BR2_PACKAGE_BRCM_PM
+	bool "Broadcom Power Management Tools"
+	help
+	  Broadcom power management tools allow easy access to power management
+	  features.
+
+	  Say Y, if you are using Broadcom hardware.

@@ -1,0 +1,31 @@
+From d9f01b36f1674d8971dece9eb64ec1718e8138bd Mon Sep 17 00:00:00 2001
+From: Al Cooper <al.cooper@broadcom.com>
+Date: Thu, 16 May 2019 09:14:59 -0400
+Subject: [PATCH] mmc-utils: Fix mmc.h includes
+
+Remove the int-l64.h portion of the patch because this is no
+longer an issue with the latest version.
+
+Signed-off-by: Al Cooper <al.cooper@broadcom.com>
+
+[Ryan: added include of linux/types.h because mmc/ioctl.h does not
+       include it in kernel version before 3.4]
+---
+ mmc.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mmc.h b/mmc.h
+index 285c1f1c9423..9812b3140dd3 100644
+--- a/mmc.h
++++ b/mmc.h
+@@ -17,6 +17,7 @@
+  * those modifications are Copyright (c) 2016 SanDisk Corp.
+  */
+ 
++#include <linux/types.h>
+ #include <linux/mmc/ioctl.h>
+ 
+ /* From kernel linux/major.h */
+-- 
+1.9.0.138.g2de3478
+

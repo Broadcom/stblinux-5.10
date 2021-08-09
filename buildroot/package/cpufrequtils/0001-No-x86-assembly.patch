@@ -1,0 +1,27 @@
+diff -urN cpufrequtils-008.old/utils/cpuid.h cpufrequtils-008/utils/cpuid.h
+--- cpufrequtils-008.old/utils/cpuid.h	2021-02-01 11:27:22.570772654 -0800
++++ cpufrequtils-008/utils/cpuid.h	2021-02-01 11:52:13.343908765 -0800
+@@ -1,6 +1,7 @@
+ #ifndef _CPUFREQ_CPUID_H
+ #define _CPUFREQ_CPUID_H
+ 
++#if defined(__i386__) || defined(__x86_64__)
+ static inline void __cpuid(unsigned int *eax, unsigned int *ebx,
+ 				unsigned int *ecx, unsigned int *edx)
+ {
+@@ -24,6 +25,15 @@
+ 	      "=d" (*edx)
+ 	    : "0" (*eax), "2" (*ecx));
+ }
++#else
++static inline void __cpuid(unsigned int *eax, unsigned int *ebx,
++				unsigned int *ecx, unsigned int *edx)
++{
++	return;
++}
++#endif
++
++
+ static inline void cpuid(unsigned int op,
+ 			 unsigned int *eax, unsigned int *ebx,
+ 			 unsigned int *ecx, unsigned int *edx)
