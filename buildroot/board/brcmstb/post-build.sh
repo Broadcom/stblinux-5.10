@@ -17,6 +17,14 @@ local_config="${output_path}/local.mk"
 # References a file used by systemd
 serial_getty="${TARGET_DIR}/lib/systemd/system/serial-getty@.service"
 
+# Default password for root
+DEFAULT_PASSWD='bcm5F:4E:3D:2C:1B:0A'
+
+# Clean up; some files we don't need are installed by default
+rm -f ${TARGET_DIR}/etc/init.d/rcK \
+	${TARGET_DIR}/etc/init.d/S[0-9]*
+
+# Tweak some default settings
 sed -i 's|$(cat $DT_DIR|$(tr -d "\\0" <$DT_DIR|' \
 	${TARGET_DIR}/etc/config/ifup.default
 
@@ -29,6 +37,11 @@ if ! grep /bin/sh ${TARGET_DIR}/etc/shells >/dev/null; then
 	echo "Adding /bin/sh to /etc/shells..."
 	echo "/bin/sh" >>${TARGET_DIR}/etc/shells
 fi
+
+# Set default password for root
+encrypted_passwd="`echo $DEFAULT_PASSWD | mkpasswd -s5`"
+# Using '%' as separator as that doesn't seem to occur in the encoded strings
+sed -i "s%^root::%root:$encrypted_passwd:%" ${TARGET_DIR}/etc/shadow
 
 # Auto-login on serial console for classic sysvinit
 if [ -e ${TARGET_DIR}/etc/inittab ]; then

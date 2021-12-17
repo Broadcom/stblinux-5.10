@@ -29,6 +29,9 @@
 #include <linux/pm_wakeup.h>
 #include <linux/reboot.h>
 #include <linux/rtc.h>
+#ifdef CONFIG_MIPS
+#include <linux/clocksource.h>
+#endif
 
 #define DRV_NAME	"brcm-waketimer"
 
@@ -388,7 +391,7 @@ static const struct rtc_class_ops brcmstb_waketmr_ops = {
 
 static DEFINE_SPINLOCK(wktmr_lock);
 
-static cycle_t wktmr_cs_read(struct clocksource *cs)
+static u64 wktmr_cs_read(struct clocksource *cs)
 {
 	struct wktmr_time t;
 	unsigned long flags;
@@ -397,7 +400,7 @@ static cycle_t wktmr_cs_read(struct clocksource *cs)
 	wktmr_read(&t);
 	spin_unlock_irqrestore(&wktmr_lock, flags);
 
-	return (t.sec * (cycle_t)WKTMR_FREQ) + t.pre;
+	return (t.sec * (u64)WKTMR_FREQ) + t.pre;
 }
 
 static struct clocksource clocksource_wktmr = {

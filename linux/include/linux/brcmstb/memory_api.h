@@ -1,5 +1,5 @@
 /*
- * Copyright © 2015-2018 Broadcom
+ * Copyright © 2021 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2, as
@@ -129,6 +129,8 @@ extern bool brcmstb_memory_override_defaults;
 extern bool brcmstb_bmem_is_bhpa;
 
 
+int brcmstb_hugepage_find_region(phys_addr_t addr, phys_addr_t size);
+int brcmstb_hugepage_region_info(int idx, phys_addr_t *addr, phys_addr_t *size);
 int brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
 			   unsigned int count, unsigned int *allocated,
 			   const struct brcmstb_range *range);

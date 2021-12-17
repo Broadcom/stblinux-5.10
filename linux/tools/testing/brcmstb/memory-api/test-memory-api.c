@@ -17,6 +17,7 @@ void brcmstb_hugepage_print(struct seq_file *seq);
 
 static struct brcmstb_memory bm;
 
+#if IS_ENABLED(CONFIG_BRCMSTB_MEMORY_API)
 static void test_kva_mem_map(struct brcmstb_range *range)
 {
 	size_t size = range->size / 2;
@@ -43,6 +44,7 @@ static void test_kva_mem_map(struct brcmstb_range *range)
 
 	brcmstb_memory_kva_unmap(addr);
 }
+#endif
 
 static void bhpa_test(void)
 {
@@ -98,6 +100,7 @@ static void bhpa_test(void)
 
 static int __init test_init(void)
 {
+#if IS_ENABLED(CONFIG_BRCMSTB_MEMORY_API)
 	struct brcmstb_named_range *nrange;
 	struct brcmstb_range *range;
 	int ret;
@@ -170,7 +173,6 @@ static int __init test_init(void)
 				range->addr, range->addr + range->size,
 				nrange->name);
 	}
-
 	pr_info("bhpa info:\n");
 	for (i = 0; i < bm.bhpa.count; ++i) {
 		if (i >= MAX_BRCMSTB_RANGE) {
@@ -181,15 +183,31 @@ static int __init test_init(void)
 		pr_info(" %llu MiB at %#016llx\n",
 				range->size / SZ_1M, range->addr);
 	}
+#else
+	struct brcmstb_range *range;
+	int i;
+
+	pr_info("bhpa info:\n");
+	for (i = 0;
+	     brcmstb_hugepage_region_info(i, &bm.bhpa.range[i].addr, &bm.bhpa.range[i].size) == 0;
+	     i++) {
+		range = &bm.bhpa.range[i];
+		pr_info(" %llu MiB at %#016llx\n",
+				range->size / SZ_1M, range->addr);
+	}
+	bm.bhpa.count = i;
+#endif
 	if (i)
 		bhpa_test();
 
+#if IS_ENABLED(CONFIG_BRCMSTB_MEMORY_API)
 	/* Test the obtention of the MEMC size */
 	for (i = 0; i < MAX_BRCMSTB_MEMC; i++) {
 		pr_info("MEMC%d size %llu MiB (%#016llx)\n",
 			i, brcmstb_memory_memc_size(i) / SZ_1M,
 			brcmstb_memory_memc_size(i));
 	}
+#endif
 
 	return -EINVAL;
 }

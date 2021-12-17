@@ -4,12 +4,23 @@
 
 #include <linux/debugfs.h>
 
+/**
+ * enum cma_flags - definition of cma attributes
+ * @CMA_NONE: no special request
+ * @CMA_DMB: CMA allocates from a Designated Movable Block
+ */
+enum cma_flags {
+	CMA_NONE		= 0x0,	/* No special request */
+	CMA_DMB			= 0x1,	/* Designated Movable Block */
+};
+
 struct cma {
 	unsigned long   base_pfn;
 	unsigned long   count;
 	unsigned long   *bitmap;
 	unsigned int order_per_bit; /* Order of pages represented by one bit */
 	struct mutex    lock;
+	enum cma_flags	flags;
 #ifdef CONFIG_CMA_DEBUGFS
 	struct hlist_head mem_head;
 	spinlock_t mem_head_lock;
@@ -26,4 +37,8 @@ static inline unsigned long cma_bitmap_maxno(struct cma *cma)
 	return cma->count >> cma->order_per_bit;
 }
 
+static inline bool cma_is_dmb(struct cma *cma)
+{
+	return cma->flags & CMA_DMB;
+}
 #endif

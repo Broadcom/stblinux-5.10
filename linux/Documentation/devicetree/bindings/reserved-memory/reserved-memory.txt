@@ -47,10 +47,17 @@ and size is ignored.
 Additional properties:
 compatible (optional) - standard definition
     - may contain the following strings:
+        - designated-movable-block: This indicates a region of memory meant
+          to be placed into ZONE_MOVABLE. The region must include the
+          "reusable" property.
         - shared-dma-pool: This indicates a region of memory meant to be
           used as a shared pool of DMA buffers for a set of devices. It can
           be used by an operating system to instantiate the necessary pool
           management subsystem if necessary.
+        - shared-dmb-pool: This indicates a shared-dma-pool region that is
+          located within a Designated Movable Block. The operating system
+          is free to use unallocated memory for movable allocations in this
+          region. Devices need to be tolerant of latency to use this pool.
         - vendor specific string in the form <vendor>,[<device>-]<usage>
 no-map (optional) - empty property
     - Indicates the operating system must not create a virtual mapping

@@ -104,9 +104,11 @@ static int __init __reserved_mem_alloc_size(unsigned long node,
 
 	nomap = of_get_flat_dt_prop(node, "no-map", NULL) != NULL;
 
-	/* Need adjust the alignment to satisfy the CMA requirement */
-	if (IS_ENABLED(CONFIG_CMA)
-	    && of_flat_dt_is_compatible(node, "shared-dma-pool")
+	/* Need adjust the alignment to satisfy the CMA/DMB requirement */
+	if (((IS_ENABLED(CONFIG_CMA) &&
+	      (of_flat_dt_is_compatible(node, "shared-dma-pool") ||
+	       of_flat_dt_is_compatible(node, "shared-dmb-pool"))) ||
+	     (of_flat_dt_is_compatible(node, "designated-movable-block")))
 	    && of_get_flat_dt_prop(node, "reusable", NULL)
 	    && !nomap) {
 		unsigned long order =
@@ -134,9 +136,9 @@ static int __init __reserved_mem_alloc_size(unsigned long node,
 			ret = early_init_dt_alloc_reserved_memory_arch(size,
 					align, start, end, nomap, &base);
 			if (ret == 0) {
-				pr_debug("allocated memory for '%s' node: base %pa, size %ld MiB\n",
+				pr_debug("allocated memory for '%s' node: base %pa, size %lu MiB\n",
 					uname, &base,
-					(unsigned long)size / SZ_1M);
+					(unsigned long)(size / SZ_1M));
 				break;
 			}
 			len -= t_len;
@@ -146,8 +148,8 @@ static int __init __reserved_mem_alloc_size(unsigned long node,
 		ret = early_init_dt_alloc_reserved_memory_arch(size, align,
 							0, 0, nomap, &base);
 		if (ret == 0)
-			pr_debug("allocated memory for '%s' node: base %pa, size %ld MiB\n",
-				uname, &base, (unsigned long)size / SZ_1M);
+			pr_debug("allocated memory for '%s' node: base %pa, size %lu MiB\n",
+				uname, &base, (unsigned long)(size / SZ_1M));
 	}
 
 	if (base == 0) {

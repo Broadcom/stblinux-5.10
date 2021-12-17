@@ -1652,6 +1652,11 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 
 	/* If unpopulated, no other information is useful */
 	if (!populated_zone(zone)) {
+		/* Show start_pfn for empty overlapped zones */
+		if (zone->spanned_pages)
+			seq_printf(m,
+				   "\n  start_pfn:           %lu",
+				   zone->zone_start_pfn);
 		seq_putc(m, '\n');
 		return;
 	}

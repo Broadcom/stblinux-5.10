@@ -73,4 +73,11 @@ config BR2_PACKAGE_DROPBEAR_LOCALOPTIONS_FILE
 	  localoptions.h. It can be used to tweak the Dropbear
 	  configuration.
 
+config BR2_PACKAGE_DROPBEAR_DISABLE_GETRANDOM
+	bool "disable use of getrandom()"
+	help
+	  Disable the use of the getrandom() system call on systems
+	  with little to no entropy. Not recommended unless you have
+	  such a system.
+
 endif

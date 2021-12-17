@@ -117,6 +117,17 @@ my %generic_config = (
 	'BR2_LINUX_KERNEL_CUSTOM_REPO_VERSION' => 'stb-4.9',
 );
 
+sub get_stb_version_from_str($)
+{
+	my ($s) = @_;
+
+	if ($s =~ /^(\S+)-(\d+)\.(\d+)-(\d+)\.(\d+)$/) {
+		return [$1, $2, $3, $4, $5];
+	}
+
+	return undef;
+}
+
 sub check_br()
 {
 	my $readme = 'README';
@@ -174,6 +185,34 @@ sub fix_shared_permissions($)
 		}
 	}
 	closedir($dh);
+}
+
+# Sorts version strings of the form x.y-a.b numerically. The leftmost digit that
+# is different between the two version strings determines the outcome.
+#     stbgcc-11.0-0.1 > stbgcc-8.3-0.4 > stbgcc-8.3-0.3 > stbgcc-6.3-1.8
+# If one of the version strings can't be broken down into the x.y-a-b format, a
+# regular string comparison is performed.
+sub stbver_sort($$)
+{
+	my ($my_a, $my_b) = @_;
+	my $a_ver = get_stb_version_from_str($my_a);
+	my $b_ver = get_stb_version_from_str($my_b);
+	my $ret;
+
+	# Fall back to lexical comparison
+	if (!defined($a_ver) || !defined($b_ver)) {
+		return $my_a cmp $my_b;
+	}
+
+	# The first array element is the name (e.g. stbgcc or stbllvm). Skip
+	# that for the time being.
+	for (my $i = 1; $i <= $#$a_ver; $i++) {
+		if ($a_ver->[$i] != $b_ver->[$i]) {
+			return $a_ver->[$i] <=> $b_ver->[$i];
+		}
+	}
+
+	return 0;
 }
 
 sub get_ccache_dir($)
@@ -512,6 +551,54 @@ sub check_ams_tracing_remote($$)
 	return check_feature_remote($remote, $branch, STB_AMS_TRACING);
 }
 
+sub get_linux_ver_stream($)
+{
+	my ($stream) = @_;
+	my ($major, $minor, $patch);
+	my $line;
+
+	while ($line = <$stream>) {
+		chomp($line);
+		if ($line =~ /^VERSION\s+=\s+(\d+)$/) {
+			$major = int($1);
+		} elsif ($line =~ /^PATCHLEVEL\s+=\s+(\d+)$/) {
+			$minor = int($1);
+		} elsif ($line =~ /^SUBLEVEL\s+=\s+(\d+)$/) {
+			$patch = int($1);
+			return ($major, $minor, $patch);
+		}
+	}
+	return ();
+}
+
+sub get_linux_ver_local($)
+{
+	my ($local_linux) = @_;
+	my $makefile = "$local_linux/Makefile";
+	my @ver;
+	my $fh;
+
+	open($fh, $makefile);
+	@ver = get_linux_ver_stream($fh);
+	close($fh);
+
+	return @ver;
+}
+
+sub get_linux_ver_remote($$)
+{
+	my ($remote, $branch) = @_;
+	my @ver;
+	my $pipe;
+
+	open($pipe, "git archive --format=tar --remote=$remote $branch ".
+		"Makefile | tar -x -f- -O |");
+	@ver = get_linux_ver_stream($pipe);
+	close($pipe);
+
+	return @ver;
+}
+
 sub get_cores()
 {
 	my $num_cores;
@@ -611,12 +698,15 @@ sub get_libc($$)
 {
 	my ($toolchain, $arch) = @_;
 	my $full_path = "$toolchain/bin/".$compiler_map{$arch};
-	my $compiler = readlink($full_path);
+	my $target = `$full_path -v 2>&1 | grep '^Target:'`;
 
-	if (!defined($compiler)) {
+	if ($target =~ /^Target:\s+(\S+)/) {
+		$target = $1;
+	} else {
 		return undef;
 	}
-	if ($compiler =~ /(musl|uclibc)/) {
+
+	if ($target =~ /(musl|uclibc)/) {
 		return $1;
 	}
 
@@ -625,14 +715,14 @@ sub get_libc($$)
 
 sub find_toolchain($)
 {
-	my ($toolchain_ver) = @_;
+	my ($toolchain) = @_;
 	my @path = split(/:/, $ENV{'PATH'});
 	my @toolchains;
 	my $dh;
 
 	foreach my $dir (@path) {
-		# We don't support anything before stbgcc-6.x at this point.
-		if ($dir =~ /stbgcc-[6-9]/ && $dir =~ $toolchain_ver) {
+		# We don't support anything before stbgcc-6.x.
+		if ($dir =~ /stbgcc-([6-9]|\d{2,})\./ && $dir =~ $toolchain) {
 			$dir =~ s|/bin/?$||;
 			# Only use the directory if it actually exists.
 			if (-d $dir) {
@@ -650,8 +740,8 @@ sub find_toolchain($)
 	# directory must end with a digit (e.g. stbgcc-6.3-1.7). This excludes
 	# development toolchains that may have a suffix after the version number
 	# from being searched automatically.
-	@toolchains = sort { $b cmp $a }
-		grep { /stbgcc-[6-9].*\d$/ } readdir($dh);
+	@toolchains = sort { stbver_sort($b, $a) }
+		grep { /stbgcc-([6-9]|\d{2,})\..*\d$/ } readdir($dh);
 	closedir($dh);
 
 	foreach my $dir (@toolchains) {
@@ -659,8 +749,7 @@ sub find_toolchain($)
 
 		# If the toolchain version matches or if the version is empty,
 		# return the toolchain, provided the "bin" directory exists.
-		if (-d "$d/bin" && ($dir =~ $toolchain_ver ||
-		    $toolchain_ver eq '')) {
+		if (-d "$d/bin" && ($dir =~ $toolchain || $toolchain eq '')) {
 			return $d;
 		}
 	}
@@ -1253,9 +1342,9 @@ sub get_br_ccache($)
 	if (defined($br_ccache)) {
 		if ($br_ccache eq '-') {
 			$generic_config{'BR2_CCACHE'} = '';
-		} else {
-			$generic_config{'BR2_CCACHE_DIR'} = $br_ccache;
+			return undef;
 		}
+		$generic_config{'BR2_CCACHE_DIR'} = $br_ccache;
 	} else {
 		$br_ccache = get_ccache_dir(SHARED_CCACHE);
 		$generic_config{'BR2_CCACHE_DIR'} = $br_ccache;
@@ -1421,6 +1510,7 @@ sub print_usage($)
 my $prg = basename($0);
 
 my @orig_cmdline = @ARGV;
+my @linux_ver;
 my $merged_config = 'brcmstb_merged_defconfig';
 my $br_output_default = 'output';
 my $temp_config = 'temp_config';
@@ -1568,7 +1658,7 @@ $temp_config = "$br_outputdir/$temp_config";
 
 $br_ccache = get_br_ccache($opts{'X'});
 if (defined($br_ccache)) {
-	print("Using custom CCACHE $br_ccache...\n");
+	print("Using CCACHE $br_ccache...\n");
 } else {
 	print("Not using CCACHE to build...\n");
 }
@@ -1706,6 +1796,7 @@ if (defined($local_linux)) {
 	if (!check_ams_tracing_local($local_linux)) {
 		$disable_ams_tracing = 1;
 	}
+	@linux_ver = get_linux_ver_local($local_linux);
 
 	write_brcmstbmk($prg, $relative_outputdir, $local_linux);
 	write_localmk($prg, $relative_outputdir);
@@ -1750,8 +1841,16 @@ if (defined($local_linux)) {
 	if (!check_ams_tracing_remote($linux_git_url, $linux_branch)) {
 		$disable_ams_tracing = 1;
 	}
+	@linux_ver = get_linux_ver_remote($linux_git_url, $linux_branch);
 }
 
+if (!defined($linux_ver[0])) {
+	print(STDERR "$prg: couldn't determine version of Linux kernel\n");
+	exit(1);
+}
+
+printf("Target kernel is %d.%d.%d...\n", $linux_ver[0], $linux_ver[1],
+	$linux_ver[2]);
 if ($disable_cma_driver) {
 	print("Disabling CMATOOL since kernel doesn't support it...\n");
 	$generic_config{'BR2_PACKAGE_CMATOOL'} = '';
@@ -1759,6 +1858,10 @@ if ($disable_cma_driver) {
 if ($disable_ams_tracing) {
 	print("Disabling BRCM_AMS_TRACING; kernel doesn't support it...\n");
 	$generic_config{'BR2_PACKAGE_BRCM_AMS_TRACING'} = '';
+}
+if ($linux_ver[0] < 5 || ($linux_ver[0] == 5 && $linux_ver[1] < 1)) {
+	print("Disabling ubihealthd for Linux < 5.1...\n");
+	$generic_config{'BR2_PACKAGE_MTD_UBIHEALTHD'} = '';
 }
 
 $inline_kernel_frag_file = $relative_outputdir."/".KERNEL_FRAG_FILE;
