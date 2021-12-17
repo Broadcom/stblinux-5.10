@@ -53,7 +53,7 @@
  * 'pmap_cores' in drivers/soc/bcm/brcmstb/nexus/dvfs.c
  */
 static const char * const linux_cores[] = {
-	"cpu_core",
+	"cpu0",
 	"v3d",
 	"sysif",
 	"scb",
@@ -75,6 +75,10 @@ static const char * const linux_cores[] = {
 	"asp0",
 	"hvd_cabac0",
 	"axi0",
+	"bstm0",
+	"cpu1",
+	"cpu2",
+	"cpu3",
 };
 
 static const char *proto_to_str(int proto)
@@ -118,6 +122,9 @@ static const char  *msg_id_to_str(int proto, unsigned int id)
 	static const char *vpucom_strs[]
 		= { "Version", "Attrs", "Msg_attrs", "Send_VPU_Msg",
 		    "Async_Notify"};
+	static const char *voltage_strs[]
+		= { "Version", "Attrs", "Msg_attrs", "Dom_attrs", "Desc_levels",
+		    "Config_set", "Config_get", "Level_set", "Level_get", };
 
 	const unsigned int base_num = STR_ARRAY_SIZE(base_strs);
 	const unsigned int perf_num = STR_ARRAY_SIZE(perf_strs);
@@ -125,6 +132,7 @@ static const char  *msg_id_to_str(int proto, unsigned int id)
 	const unsigned int clock_num = STR_ARRAY_SIZE(clock_strs);
 	const unsigned int brcm_num = STR_ARRAY_SIZE(brcm_strs);
 	const unsigned int vpucom_num = STR_ARRAY_SIZE(vpucom_strs);
+	const unsigned int volt_num = STR_ARRAY_SIZE(voltage_strs);
 
 	if (proto == SCMI_PROTOCOL_BASE && id < base_num)
 		return base_strs[id];
@@ -138,6 +146,9 @@ static const char  *msg_id_to_str(int proto, unsigned int id)
 		return brcm_strs[id];
 	else if (proto == SCMI_PROTOCOL_VPUCOM && id < vpucom_num)
 		return vpucom_strs[id];
+	else if (proto == SCMI_PROTOCOL_VOLTAGE && id < volt_num)
+		return voltage_strs[id];
+
 	else
 		return "Unknown";
 }
@@ -198,7 +209,7 @@ void prn_event_decoded(struct trace_header *th, struct event *evp,
 		       msg_id_to_str(evp->params[0], evp->params[1]));
 		if (evp->params[0] == SCMI_PROTOCOL_CLOCK &&
 		    evp->params[1] == CLOCK_CONFIG_SET) {
-			printf("clk_%sable(%s)",
+			printf("clk_%sable(%s)\n",
 			       (evp->params[3] & 0x1) ? "en" : "dis",
 			       trace_decode_clk_name(evp->params[2]));
 		} else if (evp->params[0] == SCMI_PROTOCOL_PERF

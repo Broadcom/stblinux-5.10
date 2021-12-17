@@ -1,0 +1,88 @@
+From a685e3a53e2546138368b71366dcd1ba5fdb0c4d Mon Sep 17 00:00:00 2001
+From: Markus Mayer <mmayer@broadcom.com>
+Date: Thu, 30 Sep 2021 14:02:24 -0700
+Subject: [PATCH] mtd-utils: implement getrandom() if libc doesn't
+
+---
+ include/random.h       | 13 +++++++++++++
+ lib/common.c           | 19 +++++++++++++++++++
+ ubi-utils/ubihealthd.c |  5 +++++
+ 3 files changed, 37 insertions(+)
+ create mode 100644 include/random.h
+
+diff --git a/include/random.h b/include/random.h
+new file mode 100644
+index 000000000000..922a0f829c44
+--- /dev/null
++++ b/include/random.h
+@@ -0,0 +1,13 @@
++#ifndef _RANDOM_H
++#define _RANDOM_H 1
++
++#include <features.h>
++#include <sys/types.h>
++
++#define GRND_NONBLOCK 0x01
++#define GRND_RANDOM 0x02
++#define GRND_INSECURE 0x04
++
++ssize_t getrandom(void *buffer, size_t length, unsigned int flags);
++
++#endif /* _RANDOM_H */
+diff --git a/lib/common.c b/lib/common.c
+index 804187866363..62be35b986e2 100644
+--- a/lib/common.c
++++ b/lib/common.c
+@@ -34,6 +34,25 @@
+ #include <unistd.h>
+ #include "common.h"
+ 
++#ifndef HAVE_SYS_RANDOM_H
++#ifndef __NR_getrandom
++#include <errno.h>
++#endif
++#include <sys/syscall.h>
++#include "random.h"
++
++ssize_t getrandom(void *buffer, size_t length, unsigned int flags)
++{
++#ifdef __NR_getrandom
++	return syscall(__NR_getrandom, buffer, length, flags);
++#else
++	/* For kernels that don't support getrandom() (< 3.17). */
++	errno = ENOSYS;
++	return -1;
++#endif
++}
++#endif /* !HAVE_SYS_RANDOM_H */
++
+ /**
+  * get_multiplier - convert size specifier to an integer multiplier.
+  * @str: the size specifier string
+diff --git a/ubi-utils/ubihealthd.c b/ubi-utils/ubihealthd.c
+index 27799f7c086a..66da04ac8f91 100644
+--- a/ubi-utils/ubihealthd.c
++++ b/ubi-utils/ubihealthd.c
+@@ -12,7 +12,9 @@
+ #include <string.h>
+ #include <sys/ioctl.h>
+ #include <syslog.h>
++#ifdef HAVE_SYS_RANDOM_H
+ #include <sys/random.h>
++#endif
+ #include <sys/signalfd.h>
+ #include <sys/stat.h>
+ #include <sys/timerfd.h>
+@@ -23,6 +25,9 @@
+ 
+ #include "libubi.h"
+ #include "common.h"
++#ifndef HAVE_SYS_RANDOM_H
++#include "random.h"
++#endif
+ 
+ #ifndef UBI_IOCRPEB
+ #define UBI_IOCRPEB _IOW(UBI_IOC_MAGIC, 4, int32_t)
+-- 
+2.25.1
+

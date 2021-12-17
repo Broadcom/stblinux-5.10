@@ -1,5 +1,5 @@
 /*
- * Copyright © 2015-2019 Broadcom
+ * Copyright © 2021 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -31,7 +31,6 @@
 #include <linux/sched.h>
 #include <linux/sizes.h>
 #include <linux/sort.h>
-#include <linux/brcmstb/bhpa.h>
 #include <linux/brcmstb/bmem.h>
 #include <linux/brcmstb/cma_driver.h>
 #include <linux/brcmstb/memory_api.h>
@@ -40,11 +39,15 @@
 #include <linux/pagewalk.h>
 #include <linux/memory_hotplug.h>
 #include <linux/swiotlb.h>
+#include <linux/kmemleak.h>
+#include <linux/dmb.h>
 #ifdef CONFIG_ARM
 #include <asm/early_ioremap.h>
 #endif
 #include <asm/fixmap.h>
 #include <asm/cputype.h>
+
+#include "bhpa.h"
 
 extern unsigned long __initramfs_size;
 
@@ -84,11 +87,7 @@ enum {
 	BUSNUM_MCP2 = 0x6,
 };
 
-#if defined(CONFIG_KASAN) && defined(KASAN_SHADOW_SCALE_SHIFT)
-#define BMEM_LARGE_ENOUGH	(SZ_1G - (SZ_1G >> KASAN_SHADOW_SCALE_SHIFT))
-#else
 #define BMEM_LARGE_ENOUGH	(SZ_1G)
-#endif
 
 /* -------------------- Shared and local vars -------------------- */
 struct kva_map {
@@ -776,21 +775,46 @@ static int populate_reserved(struct brcmstb_memory *mem)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_BRCMSTB_HUGEPAGES)
+struct bhpa_region bhpa_regions[MAX_BHPA_REGIONS];
+EXPORT_SYMBOL(bhpa_regions);
+unsigned int n_bhpa_regions;
+EXPORT_SYMBOL(n_bhpa_regions);
+
+/*
+ * Finds the IDX'th bhpa region, and fills in addr/size if it exists.
+ * Returns 0 on success, <0 on failure.
+ * Can pass in NULL for addr and/or size if you only care about return value.
+ */
+static int _bhpa_region_info(int idx, phys_addr_t *addr, phys_addr_t *size)
+{
+	if (idx >= n_bhpa_regions)
+		return -ENOENT;
+
+	if (addr)
+		*addr = bhpa_regions[idx].addr;
+	if (size)
+		*size = bhpa_regions[idx].size;
+
+	return 0;
+}
+#endif
+
 static int populate_bhpa(struct brcmstb_memory *mem)
 {
-#ifdef CONFIG_BRCMSTB_HUGEPAGES
+#if IS_ENABLED(CONFIG_BRCMSTB_HUGEPAGES)
 	phys_addr_t addr, size;
 	int i;
 
 	for (i = 0; i < MAX_BRCMSTB_RANGE; ++i) {
-		if (bhpa_region_info(i, &addr, &size))
+		if (_bhpa_region_info(i, &addr, &size))
 			break;  /* no more regions */
 		mem->bhpa.range[i].addr = addr;
 		mem->bhpa.range[i].size = size;
 		++mem->bhpa.count;
 	}
 	if (i >= MAX_BRCMSTB_RANGE) {
-		while (bhpa_region_info(i, &addr, &size) == 0) {
+		while (_bhpa_region_info(i, &addr, &size) == 0) {
 			pr_warn("%s: Exceeded max ranges\n", __func__);
 			++mem->bhpa.count;
 		}
@@ -801,6 +825,297 @@ static int populate_bhpa(struct brcmstb_memory *mem)
 	return -ENOSYS;
 #endif
 }
+
+#if IS_ENABLED(CONFIG_BRCMSTB_HUGEPAGES)
+#if pageblock_order > BHPA_ORDER
+#define BHPA_ALIGN	(1 << (pageblock_order + PAGE_SHIFT))
+#else
+#define BHPA_ALIGN	BHPA_SIZE
+#endif
+
+static bool bhpa_disabled;
+
+static int __init __bhpa_setup(phys_addr_t addr, phys_addr_t size)
+{
+	phys_addr_t end = addr + size;
+	int i;
+
+	/* Consolidate overlapping regions */
+	for (i = 0; i < n_bhpa_regions; i++) {
+		if (addr > bhpa_regions[i].addr + bhpa_regions[i].size)
+			continue;
+		if (end < bhpa_regions[i].addr)
+			continue;
+		end = max(end, bhpa_regions[i].addr + bhpa_regions[i].size);
+		addr = min(addr, bhpa_regions[i].addr);
+		bhpa_regions[i].addr = bhpa_regions[n_bhpa_regions].addr;
+		bhpa_regions[i--].size = bhpa_regions[n_bhpa_regions--].size;
+	}
+
+	if (n_bhpa_regions == MAX_BHPA_REGIONS) {
+		pr_warn_once("too many regions, ignoring extras\n");
+		return -E2BIG;
+	}
+
+	bhpa_regions[n_bhpa_regions].addr = addr;
+	bhpa_regions[n_bhpa_regions].size = end - addr;
+	n_bhpa_regions++;
+
+	return 0;
+}
+
+/*
+ * Parses command line for bhpa= options
+ */
+static int __init bhpa_setup(char *str)
+{
+	phys_addr_t addr, end = 0, size;
+	char *orig_str = str;
+	int ret;
+
+	addr = memparse(str, &str);
+	if (*str == '@') {
+		size = addr;
+		addr = memparse(str + 1, &str);
+		end = addr + size;
+	} else if (*str == '-') {
+		end = memparse(str + 1, &str);
+	}
+
+	addr = ALIGN(addr, BHPA_ALIGN);
+	end = ALIGN_DOWN(end, BHPA_ALIGN);
+	size = end - addr;
+
+	if (size == 0) {
+		pr_info("disabling reserved memory\n");
+		bhpa_disabled = true;
+		return 0;
+	}
+
+	if (addr < memblock_start_of_DRAM()) {
+		pr_warn("ignoring invalid range '%s' below addressable DRAM\n",
+			orig_str);
+		return 0;
+	}
+
+	if (addr > end || size < pageblock_nr_pages << PAGE_SHIFT) {
+		pr_warn("ignoring invalid range '%s' (too small)\n",
+				orig_str);
+		return 0;
+	}
+
+	ret = __bhpa_setup(addr, size);
+	if (!ret)
+		brcmstb_memory_override_defaults = true;
+	return ret;
+}
+early_param("bhpa", bhpa_setup);
+
+static __init void split_bhpa_region(phys_addr_t addr, struct bhpa_region *p)
+{
+	struct bhpa_region *tmp;
+	phys_addr_t end;
+
+	if (p->addr + p->size > addr + BHPA_SIZE) {
+		if (n_bhpa_regions < MAX_BHPA_REGIONS) {
+			tmp = &bhpa_regions[n_bhpa_regions++];
+			while (tmp > p) {
+				*tmp = *(tmp - 1);
+				tmp--;
+			}
+			(++tmp)->addr = addr;
+			tmp->size -= addr - p->addr;
+			end = addr + tmp->size;
+			B_LOG_DBG("region split: %pa-%pa", &addr, &end);
+		} else {
+			B_LOG_WRN("bhpa region truncated (MAX_BHPA_REGIONS)");
+		}
+	}
+	p->size = addr - p->addr;
+	end = p->addr + p->size;
+	B_LOG_DBG("region added: %pa-%pa", &p->addr, &end);
+}
+
+static __init void intersect_bhpa_ranges(phys_addr_t start, phys_addr_t size,
+					 struct bhpa_region **ptr)
+{
+	struct bhpa_region *tmp, *p = *ptr;
+	phys_addr_t end = start + size;
+
+	B_LOG_DBG("range: %pa-%pa", &start, &end);
+	while (p < &bhpa_regions[n_bhpa_regions] &&
+	       p->addr + p->size <= start) {
+		tmp = p;
+		end = p->addr + p->size;
+		B_LOG_WRN("unmapped bhpa region %pa-%pa",
+			   &p->addr, &end);
+
+		n_bhpa_regions--;
+		while (tmp < &bhpa_regions[n_bhpa_regions]) {
+			*tmp = *(tmp + 1);
+			tmp++;
+		}
+	}
+
+	end = start + size;
+	while (p < &bhpa_regions[n_bhpa_regions] && p->addr < end) {
+		phys_addr_t last;
+
+		start = max(start, p->addr);
+		start = ALIGN(start, BHPA_ALIGN);
+		last = min(end, p->addr + p->size);
+		last = ALIGN_DOWN(last, BHPA_ALIGN);
+
+		if (start + BHPA_ALIGN >= last) {
+			*ptr = p;
+			return;
+		}
+
+		B_LOG_DBG("intersection: %pa-%pa", &start, &last);
+		p->size -= start - p->addr;
+		p->addr = start;
+
+		split_bhpa_region(last, p);
+		p++;
+	}
+
+	*ptr = p;
+}
+
+static __init int memc_map(int memc, u64 addr, u64 size, void *context)
+{
+	struct bhpa_region **ptr = context, *p;
+	phys_addr_t start = (phys_addr_t)addr;
+
+	if (start != addr) {
+		pr_err("phys_addr_t smaller than provided address 0x%llx!\n",
+			addr);
+		return -EINVAL;
+	}
+
+	if (memc == -1) {
+		pr_err("address 0x%llx does not appear to be in any memc\n",
+			addr);
+		return -EINVAL;
+	}
+
+	p = *ptr;
+	intersect_bhpa_ranges(start, (phys_addr_t)size, ptr);
+
+	while (p != *ptr) {
+		p->memc = memc;
+		p++;
+	}
+
+	return 0;
+}
+
+static void __init bhpa_alloc_ranges(void)
+{
+	struct bhpa_region *p = bhpa_regions;
+	phys_addr_t end;
+
+	while (p < &bhpa_regions[n_bhpa_regions]) {
+		end = p->addr + p->size;
+		/*
+		 * This is based on memblock_alloc_range_nid(), but excludes
+		 * the search for efficiency.
+		 */
+		if (!dmb_reserve(p->addr, p->size)) {
+			B_LOG_MSG("Alloc: MEMC%d: %pa-%pa", p->memc,
+				&p->addr, &end);
+			/*
+			 * The min_count is set to 0 so that memblock
+			 * allocations are never reported as leaks.
+			 */
+			kmemleak_alloc_phys(p->addr, p->size, 0, 0);
+			p++;
+		} else {
+			B_LOG_WRN("bhpa reservation %pa-%pa failed!",
+				&p->addr, &end);
+			while (++p < &bhpa_regions[n_bhpa_regions])
+				*(p - 1) = *p;
+			n_bhpa_regions--;
+		}
+	}
+}
+
+static void __init brcmstb_bhpa_reserve(void)
+{
+	phys_addr_t addr, size, start, end;
+	struct bhpa_region *p, *tmp;
+	u64 loop;
+	int i;
+
+	if (bhpa_disabled) {
+		n_bhpa_regions = 0;
+		return;
+	}
+
+	if (brcmstb_default_reserve == BRCMSTB_RESERVE_BHPA &&
+			!n_bhpa_regions &&
+			!brcmstb_memory_override_defaults)
+		brcmstb_memory_default_reserve(__bhpa_setup);
+
+	if (!n_bhpa_regions)
+		return;
+
+	for (i = 0; i < n_bhpa_regions; i++) {
+		bhpa_regions[i].memc = -1;
+		if (!i)
+			continue;
+
+		/* Sort regions */
+		p = &bhpa_regions[i];
+		addr = p->addr;
+		size = p->size;
+		while (p != bhpa_regions && p->addr < (p - 1)->addr) {
+			p->addr = (p - 1)->addr;
+			p->size = (p - 1)->size;
+			p--;
+		}
+		p->addr = addr;
+		p->size = size;
+	}
+	for (i = 0; i < n_bhpa_regions; i++) {
+		p = &bhpa_regions[i];
+		end = p->addr + p->size;
+		B_LOG_DBG("region: %pa-%pa", &p->addr, &end);
+	}
+
+	p = bhpa_regions;
+	early_for_each_memc_range(memc_map, &p);
+	while (p < &bhpa_regions[n_bhpa_regions]) {
+		tmp = &bhpa_regions[--n_bhpa_regions];
+		end = tmp->addr + tmp->size;
+		B_LOG_WRN("Drop region: %pa-%pa", &tmp->addr, &end);
+	}
+
+	if (!n_bhpa_regions)
+		return;
+
+	p = bhpa_regions;
+	for_each_free_mem_range(loop, NUMA_NO_NODE, MEMBLOCK_NONE, &start,
+				&end, NULL) {
+		intersect_bhpa_ranges(start, end - start, &p);
+
+		if (p >= &bhpa_regions[n_bhpa_regions])
+			break;
+	}
+	while (p < &bhpa_regions[n_bhpa_regions]) {
+		tmp = &bhpa_regions[--n_bhpa_regions];
+		end = tmp->addr + tmp->size;
+		B_LOG_WRN("Drop region: %pa-%pa", &tmp->addr, &end);
+	}
+
+	bhpa_alloc_ranges();
+}
+
+void __init brcmstb_bhpa_setup(phys_addr_t addr, phys_addr_t size)
+{
+	__bhpa_setup(addr, size);
+}
+#endif
 
 static int __init brcmstb_memory_set_range(phys_addr_t start, phys_addr_t end,
 					   int (*setup)(phys_addr_t start,
@@ -988,6 +1303,7 @@ static __init int memc_reserve_bmem(int memc, u64 addr, u64 size, void *context)
 {
 	struct default_res *ctx = context;
 	u64 adj = 0, end = addr + size, limit, tmp;
+	phys_addr_t p_start, p_end;
 
 	if ((phys_addr_t)addr != addr) {
 		pr_err("phys_addr_t too small for address 0x%llx!\n",
@@ -1002,22 +1318,21 @@ static __init int memc_reserve_bmem(int memc, u64 addr, u64 size, void *context)
 
 #if defined(CONFIG_KASAN) && defined(KASAN_SHADOW_SCALE_SHIFT)
 	/* KASAN requires a fraction of the memory */
-	addr += size >> KASAN_SHADOW_SCALE_SHIFT;
-	size = end - addr;
+	adj += size >> KASAN_SHADOW_SCALE_SHIFT;
 #endif
 
 	if (!ctx->count++) {	/* First Bank */
 		limit = (u64)memblock_get_current_limit();
 
 #ifdef CONFIG_BLK_DEV_INITRD
-		/* Assume that a compressed initramfs will expand roughly to 10
+		/* Assume that a compressed initramfs will expand roughly to 5
 		 * times its compressed size. Determining its exact size early
 		 * on boot with no memory allocator available is not possible
 		 * since decompressors assume kmalloc() is available.
 		 */
-		addr += __initramfs_size * 10;
-		size = end - addr;
+		adj += __initramfs_size * 5;
 #endif
+
 		/*
 		 *  On ARM64 systems, force the first memory controller
 		 * to be partitioned the same way it would on ARM
@@ -1026,23 +1341,35 @@ static __init int memc_reserve_bmem(int memc, u64 addr, u64 size, void *context)
 		 * give 512MB to the kernel.
 		 */
 #ifdef CONFIG_ARM64
-		if (limit > addr + SZ_512M && size >= VME_A32_MAX)
-			limit = addr + SZ_512M;
-		else if (limit > addr + SZ_256M)
-			limit = addr + SZ_256M;
+		if (size >= VME_A32_MAX)
+			adj += SZ_512M;
+		else
+			adj += SZ_256M;
+#else
+		if (brcmstb_default_reserve == BRCMSTB_RESERVE_BMEM ||
+		    brcmstb_default_reserve == BRCMSTB_RESERVE_BHPA)
+			adj += SZ_128M;
 #endif
+
+		/* Compensate for any reserved memory */
+		for_each_reserved_mem_range(tmp, &p_start, &p_end) {
+			if (p_end <= addr)
+				continue;
+			if (p_start >= addr + adj)
+				break;
+
+			adj += p_end - max(addr, (u64)p_start);
+		}
+
+#ifdef CONFIG_ARM64
+		if (limit > addr + adj)
+			limit = addr + adj;
+#endif
+
 		if (end <= limit && end == (u64)memblock_end_of_DRAM()) {
-			if (size < SZ_32M) {
+			if (size < adj + SZ_32M) {
 				pr_err("low memory too small for default bmem\n");
 				return 0;
-			}
-
-			if (brcmstb_default_reserve == BRCMSTB_RESERVE_BMEM ||
-			    brcmstb_default_reserve == BRCMSTB_RESERVE_BHPA) {
-				if (size <= SZ_128M)
-					return 0;
-
-				adj = SZ_128M;
 			}
 
 			/* kernel reserves X percent,
@@ -1067,19 +1394,24 @@ static __init int memc_reserve_bmem(int memc, u64 addr, u64 size, void *context)
 #ifdef CONFIG_ARM64
 		if (addr >= VME_A32_MAX && size >= BMEM_LARGE_ENOUGH) {
 			/* Give 256M back to Linux */
-			addr += SZ_256M;
-			size = end - addr;
+			adj += SZ_256M;
 		}
 #endif
 		/* Use the rest of the first region of this MEMC */
 		ctx->prev_memc = memc;
-	} else if (addr >= VME_A32_MAX && size > SZ_64M) {
+		addr += adj;
+		size = end - addr;
+	} else if (addr >= VME_A32_MAX && size > adj + SZ_64M) {
 		/*
 		 * Nexus doesn't use the address extension range yet,
 		 * just reserve 64 MiB in these areas until we have a
 		 * firmer specification
 		 */
+		addr += adj;
 		size = SZ_64M;
+	} else {
+		addr += adj;
+		size = end - addr;
 	}
 
 	brcmstb_memory_set_range((phys_addr_t)addr, (phys_addr_t)(addr + size),
@@ -1121,7 +1453,7 @@ static __init int memc_reserve_bhpa(int memc, u64 addr, u64 size, void *context)
 		adj = ctx->total_size;
 		do_div(adj, ratio);
 
-#ifdef KASAN_SHADOW_SCALE_SHIFT
+#if defined(CONFIG_KASAN) && defined(KASAN_SHADOW_SCALE_SHIFT)
 		/* KASAN requires a fraction of the memory */
 		adj += ctx->total_size >> KASAN_SHADOW_SCALE_SHIFT;
 #endif
@@ -1277,7 +1609,7 @@ void __init brcmstb_memory_init(void)
 		swiotlb_force = SWIOTLB_NO_FORCE;
 	brcmstb_memory_reserve();
 #ifdef CONFIG_BRCMSTB_BMEM
-#ifdef CONFIG_BRCMSTB_HUGEPAGES
+#if IS_ENABLED(CONFIG_BRCMSTB_HUGEPAGES)
 	if (brcmstb_bmem_is_bhpa)
 		bmem_reserve(brcmstb_bhpa_setup);
 	else
@@ -1287,7 +1619,7 @@ void __init brcmstb_memory_init(void)
 #ifdef CONFIG_BRCMSTB_CMA
 	cma_reserve();
 #endif
-#ifdef CONFIG_BRCMSTB_HUGEPAGES
+#if IS_ENABLED(CONFIG_BRCMSTB_HUGEPAGES)
 	brcmstb_bhpa_reserve();
 #endif
 #ifdef CONFIG_MEMORY_HOTPLUG
@@ -1754,35 +2086,6 @@ int brcmstb_memory_kva_unmap(const void *kva)
 	return 0;
 }
 EXPORT_SYMBOL(brcmstb_memory_kva_unmap);
-
-void brcmstb_hugepage_print(struct seq_file *seq)
-{
-	brcmstb_hpa_print(seq);
-}
-EXPORT_SYMBOL(brcmstb_hugepage_print);
-
-int brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
-			   unsigned int count, unsigned int *allocated,
-			   const struct brcmstb_range *range)
-{
-	return brcmstb_hpa_alloc(memcIndex, pages, count, allocated, range, 0);
-}
-EXPORT_SYMBOL(brcmstb_hugepage_alloc);
-
-int __brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
-			     unsigned int count, unsigned int *allocated,
-			     const struct brcmstb_range *range, gfp_t flags)
-{
-	return brcmstb_hpa_alloc(memcIndex, pages, count, allocated, range, flags);
-}
-EXPORT_SYMBOL(__brcmstb_hugepage_alloc);
-
-void brcmstb_hugepage_free(unsigned int memcIndex, const uint64_t *pages,
-			   unsigned int count)
-{
-	return brcmstb_hpa_free(memcIndex, pages, count);
-}
-EXPORT_SYMBOL(brcmstb_hugepage_free);
 
 void *brcmstb_ioremap(phys_addr_t phys_addr, size_t size)
 {

@@ -28,15 +28,15 @@ static struct brcm_clk_iface *iface;
 static const char * const clk_names_stb[] = {
 	/* Software Clocks and/or Cores */
 	/* [00..0f] */
-	"sw_cpu_core", "sw_v3d", "sw_sysif", "sw_scb",
+	"sw_cpu0", "sw_v3d", "sw_sysif", "sw_scb",
 	"sw_hvd0", "sw_raaga0", "sw_vice0", "sw_vice0_pss",
 	"sw_vice1", "sw_vice1_pss", "sw_xpt", "sw_m2mc0",
 	"sw_m2mc1", "sw_mipmap0", "sw_tsx0", "sw_smartcard0",
 
 	/* [10..1f] */
 	"sw_smartcard1", "reserved", "sw_bne", "sw_asp",
-	"sw_hvd_cabac0", "sw_axi0", "sw_bstm", "reserved",
-	"reserved", "reserved", "reserved", "reserved",
+	"sw_hvd_cabac0", "sw_axi0", "sw_bstm", "sw_cpu1",
+	"sw_cpu2", "sw_cpu3", "reserved", "reserved",
 	"reserved", "reserved", "reserved", "reserved",
 
 	/* [20..2f] */

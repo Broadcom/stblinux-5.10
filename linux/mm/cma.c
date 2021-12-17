@@ -32,7 +32,9 @@
 #include <linux/highmem.h>
 #include <linux/io.h>
 #include <linux/kmemleak.h>
+#include <linux/page-isolation.h>
 #include <trace/events/cma.h>
+#include <linux/dmb.h>
 
 #include "cma.h"
 
@@ -95,9 +97,13 @@ static void cma_clear_bitmap(struct cma *cma, unsigned long pfn,
 
 static void __init cma_activate_area(struct cma *cma)
 {
-	unsigned long base_pfn = cma->base_pfn, pfn = base_pfn;
+	unsigned long pfn = cma->base_pfn;
 	unsigned i = cma->count >> pageblock_order;
 	struct zone *zone;
+	int is_dmb = dmb_intersects(pfn, pfn + cma->count);
+
+	if (is_dmb == DMB_MIXED)
+		goto out_error;
 
 	cma->bitmap = bitmap_zalloc(cma_bitmap_maxno(cma), GFP_KERNEL);
 	if (!cma->bitmap)
@@ -108,8 +114,8 @@ static void __init cma_activate_area(struct cma *cma)
 
 	do {
 		unsigned j;
+		struct page *page = pfn_to_page(pfn);
 
-		base_pfn = pfn;
 		for (j = pageblock_nr_pages; j; --j, pfn++) {
 			WARN_ON_ONCE(!pfn_valid(pfn));
 			/*
@@ -121,8 +127,16 @@ static void __init cma_activate_area(struct cma *cma)
 			if (page_zone(pfn_to_page(pfn)) != zone)
 				goto not_in_zone;
 		}
-		init_cma_reserved_pageblock(pfn_to_page(base_pfn));
+		if (is_dmb == DMB_DISJOINT) {
+			set_pageblock_migratetype(page, MIGRATE_CMA);
+			init_reserved_pageblock(page);
+		}
 	} while (--i);
+
+	if (is_dmb == DMB_INTERSECTS) {
+		cma->flags |= CMA_DMB;
+		totalcma_pages -= cma->count;
+	}
 
 	mutex_init(&cma->lock);
 
@@ -416,6 +430,7 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 	unsigned long start = 0;
 	unsigned long bitmap_maxno, bitmap_no, bitmap_count;
 	size_t i;
+	unsigned int mt;
 	struct page *page = NULL;
 	int ret = -ENOMEM;
 
@@ -428,6 +443,7 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 	if (!count)
 		return NULL;
 
+	mt = cma_is_dmb(cma) ? MIGRATE_MOVABLE : MIGRATE_CMA;
 	mask = cma_bitmap_aligned_mask(cma, align);
 	offset = cma_bitmap_aligned_offset(cma, align);
 	bitmap_maxno = cma_bitmap_maxno(cma);
@@ -455,7 +471,7 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align,
 
 		pfn = cma->base_pfn + (bitmap_no << cma->order_per_bit);
 		mutex_lock(&cma_mutex);
-		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA,
+		ret = alloc_contig_range(pfn, pfn + count, mt,
 				     GFP_KERNEL | (no_warn ? __GFP_NOWARN : 0));
 		mutex_unlock(&cma_mutex);
 		if (ret == 0) {

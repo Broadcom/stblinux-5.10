@@ -1,5 +1,5 @@
 /******************************************************************************
- *  Copyright (C) 2019 Broadcom.
+ *  Copyright (C) 2019-2021 Broadcom.
  *  The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
  *
  *  This program is the proprietary software of Broadcom and/or its licensors,
@@ -46,11 +46,18 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <string.h>
 #include <libgen.h>
 #include <errno.h>
 #include "trace.h"
+
+#ifdef TARGET_BUILD
+#  define is_target() 1
+#else
+#  define is_target() 0
+#endif
 
 #define to_evp(__ev, __offset)				\
 	((void *) ((uint8_t *) __ev + __offset))
@@ -64,8 +71,11 @@ enum debugfs_file {
 	TRC_BUF_ADDR,
 };
 
+#define CLK_SUM_SYS_FILE "/sys/kernel/debug/brcm-scmi/clk_summary"
+
+
 static char *dfs[] = {
-	"/sys/kernel/debug/brcm-scmi/clk_summary",
+	CLK_SUM_SYS_FILE,
 	"/sys/kernel/debug/brcm-trace/buf_size",
 	"/sys/kernel/debug/brcm-trace/phys_addr64",
 };
@@ -81,7 +91,6 @@ struct options {
 	char *of_name;
 	char *if_name;
 	int decode;
-	int dump;
 	int auto_rd;
 	const char *clk_file;
 };
@@ -270,27 +279,73 @@ static int trace_init(uintptr_t trcbuf_paddr, uint32_t trcbuf_size)
 
 static void usage(char *progname)
 {
-	printf("\nUSAGE: %s [OPTION]... [FILE]\n\n"
-	       "example 1: dumping trace buffer to binary file on/from target\n"
-	       "     %s -a | [-p <phys addr> -l <length>] -o <output file>\n\n"
-	       "example 2: decoding binary trace buffer on target\n"
-	       "     %s -d -a | [-p <phys addr> -l <length>]\n\n"
-	       "example 3: decoding binary trace buffer input file on host\n"
-	       "     %s -d -i <input file> [-c <target-clk-summary-file>]\n\n"
-	       "Options with arguments:\n"
-	       "-p     64-bit target physical address where logs are stored\n"
-	       "-l     length of the trace buffer\n"
-	       "-i     input file name containg logs for decoding\n"
-	       "-o     output file name to dump trace buffer data to\n"
-	       "-c     target clk-summary file\n"
-	       "Options:\n"
-	       "-d     decode input trace buffer file\n"
-	       "-a     skims debugfs files for trace buffer addr, length\n"
-	       "       replaces -p & -l option\n"
-	       "\n", basename(progname), basename(progname), basename(progname),
-	       basename(progname));
+	const char *p = basename(progname);
+
+	printf("\nUSAGE:\n"
+#ifdef TARGET_BUILD
+	       "  %s [<opts>] -o data.bin\n"
+	       "  %s [<opts>] -d\n"
+#endif
+	       "  %s -d -i data.bin [-c clk.txt]\n"
+	       "\n"
+	       "DESCRIPTION:\n"
+	       "  This program is to be used after one has collected an AMS\n"
+	       "  event trace.  It is used to decode the binary trace information\n"
+	       "  into human readable form.\n"
+	       "\n"
+	       "OPTIONS:\n"
+#ifdef TARGET_BUILD
+	       "  -a\n"
+	       "      Ascertains the target's trace buffer and length. Use this\n"
+	       "      instead of '-p' and '-l' when running on the target.\n"
+	       "\n"
+#endif
+	       "  -c <infile>\n"
+	       "      Specifies the file containing the target's clock name information.\n"
+	       "      You must have previously saved this file by running the following\n"
+	       "      command on the target:\n"
+	       "          cat " CLK_SUM_SYS_FILE " > /mnt/nfs/user/clk.txt\n"
+	       "\n"
+	       "  -d\n"
+	       "      Decode the binary input trace log data to human-readable output.\n"
+	       "\n"
+	       "  -i <infile>\n"
+	       "      Specifies the input file name of previously saved binary log data.\n"
+	       "\n"
+#ifdef TARGET_BUILD
+	       "  -l <int>\n"
+	       "      Indicates the length of the trace log buffer.\n"
+	       "\n"
+	       "  -o <outfile>\n"
+	       "      Specifies the output file write dump trace buffer data\n"
+	       "\n"
+	       "  -p <hexint>\n"
+	       "      Indicates the 64-bit target physical address of the log buffer.\n"
+	       "      Useful for Mode A only\n"
+	       "\n"
+#endif
+	       "EXAMPLES:\n"
+#ifdef TARGET_BUILD
+	       "  /* Done on target, easiest approach to immediate results*/\n"
+	       "  %s -d -a\n"
+	       "  %s -d -p 0xc0000000 -l 0x8000\n"
+	       "\n"
+	       "  /* Done on target to save binary data for post-processing on host */\n"
+	       "  %s -a -o /nfs/mnt/user/log.bin\n"
+	       "  cat " CLK_SUM_SYS_FILE " > /nfs/mnt/user/clk.txt\n"
+	       "\n"
+#endif
+	       "  /* Done on target or host using previously saved files */\n"
+	       "  %s -d -i log.bin [-c clk.txt]\n"
+	       "\n",
+#ifdef TARGET_BUILD
+	       p, p, p, p, p, p, p);
+#else
+	       p, p);
+#endif
 }
 
+#ifdef TARGET_BUILD
 static int debugfs_get_val(char *fname, size_t width, uint64_t *val)
 {
 	int ret;
@@ -312,6 +367,7 @@ static int debugfs_get_val(char *fname, size_t width, uint64_t *val)
 
 	return (ret == 1) ? 0 : -1;
 }
+#endif
 
 int parse_options(int argc, char **argv, struct options *opts)
 {
@@ -325,32 +381,23 @@ int parse_options(int argc, char **argv, struct options *opts)
 
 	memset(opts, 0, sizeof(struct options));
 
-	while ((c = getopt(argc, argv, "p:l:i:o:sc:dha")) != -1) {
+#ifndef TARGET_BUILD
+	while ((c = getopt(argc, argv, "i:c:dh")) != -1) {
 		switch (c) {
-		case 'p':
-			opts->phys_addr = strtoll(optarg, NULL, 16);
-			break;
-		case 'l':
-			opts->buf_size  = atoi(optarg);
-			break;
-		case 's':
-			opts->dump = 1;
-			break;
-		case 'c':
-			opts->clk_file = optarg;
-			break;
 		case 'd':
 			opts->decode = 1;
 			break;
-		case 'i':
-			opts->if_name = optarg;
+#else
+	while ((c = getopt(argc, argv, "p:l:i:o:c:dha")) != -1) {
+		switch (c) {
+		case 'p':
+			opts->phys_addr = strtoll(optarg, NULL, 0);
+			break;
+		case 'l':
+			opts->buf_size  = strtol(optarg, NULL, 0);
 			break;
 		case 'o':
 			opts->of_name = optarg;
-			break;
-		case 'h':
-			usage(argv[0]);
-			sts = -1;
 			break;
 		case 'a':
 			opts->auto_rd = 1;
@@ -358,7 +405,21 @@ int parse_options(int argc, char **argv, struct options *opts)
 			debugfs_get_val(dfs[TRC_BUF_SIZE], 4,
 					(uint64_t *)&opts->buf_size);
 			break;
+		case 'd':
+			opts->decode = 1;
+			break;
+#endif
+		case 'c':
+			opts->clk_file = optarg;
+			break;
+		case 'i':
+			opts->if_name = optarg;
+			break;
+		case 'h':
+			usage(argv[0]);
+			exit(1);
 		case '?':
+		default:
 			if (optopt == 'o' || optopt == 'i' || optopt == 'p' ||
 			    optopt == 'l')
 				fprintf(stderr, "Option -%c requires an "
@@ -368,36 +429,39 @@ int parse_options(int argc, char **argv, struct options *opts)
 					 optopt);
 			else
 				fprintf(stderr,
-					 "Unknown option character `\\x%x'.\n",
-					 optopt);
+					 "Unknown option character 0x%x.\n",
+					(unsigned int)optopt);
 			sts = -1;
 			break;
-		default:
-			usage(argv[0]);
-			abort();
 		}
 	}
 
 	sts = -1;
+
+	if (!is_target())
+		opts->decode = 1;
+
 	/* validate arguments */
 	if (opts->if_name && opts->of_name) {
 		fprintf(stderr, "cannot specify both input and output files\n");
-	} else if (opts->dump && (!opts->of_name || (!opts->auto_rd ||
-				(!opts->phys_addr && !opts->buf_size)))) {
-		fprintf(stderr, "please provide output file name with "
-			"option along with phy addr and buffer length\n");
+
+	} else if (is_target() && !opts->decode && !opts->of_name) {
+		fprintf(stderr, "Your options won't do anything!\n");
+
 	} else if (opts->decode) {
-		if (!opts->if_name && (!opts->phys_addr || !opts->buf_size ||
-			    !opts->auto_rd))
+		if (is_target() && !opts->if_name
+		    && (!opts->phys_addr || !opts->buf_size || !opts->auto_rd))
 			fprintf(stderr, "need input file name or trace buffer "
 					"address, length\n");
-		else if (opts->if_name && (opts->phys_addr || opts->buf_size))
-			fprintf(stderr, "invalid arguments phys_addr or "
-					"length\n");
+		else if (opts->if_name && (opts->phys_addr || opts->buf_size
+				 || opts->auto_rd))
+			fprintf(stderr, "Do not use -a, -l, -p when using -i");
 		else
 			sts = 0;
-	} else
+
+	} else {
 		sts = 0;
+	}
 
 	for (index = optind; index < argc; index++) {
 		fprintf(stderr, "Non-option argument %s\n", argv[index]);
@@ -440,7 +504,7 @@ static int tracelog_from_file(char *if_name)
 	int ret;
 	struct event ev;
 	uint32_t ev_seqnum;
-	off_t start, end, head, tail;
+	uint64_t start, end, head, tail;
 	uint8_t trc_ev_sz;
 	struct trace_header th;
 	size_t th_sz = sizeof(struct trace_header);
@@ -453,13 +517,13 @@ static int tracelog_from_file(char *if_name)
 
 	ret = read(infd, &th, th_sz);
 	if (ret < trace_header_size()) {
-		fprintf(stderr, "failed to read input file %s\n", if_name);
+		fprintf(stderr, "failed to read input file '%s'\n", if_name);
 		goto tracelog_out;
 	}
 
 	ret = prn_trace_header(&th, LOGFILE);
 	if (ret != 0) {
-		fprintf(stderr, "uninitialized or corrupt log file %s\n",
+		fprintf(stderr, "uninitialized or corrupt log file '%s'.\n",
 			if_name);
 		goto tracelog_out;
 	}
@@ -470,8 +534,8 @@ static int tracelog_from_file(char *if_name)
 	head = start + th.trcbuf_head_offset;
 	tail = start + th.trcbuf_tail_offset;
 
-	printf("trace: start 0x%lx end 0x%lx head 0x%lx tail 0x%lx\n",
-	       start, end, head, tail);
+	printf("trace: start 0x%"PRIx64", end 0x%"PRIx64", head 0x%"PRIx64
+	       ", tail 0x%"PRIx64"\n", start, end, head, tail);
 
 	/* set the start head sequence number */
 	ev_seqnum = th.trcbuf_head_seqnum;

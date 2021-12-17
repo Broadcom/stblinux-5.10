@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-SYSTEMD_VERSION = 247.3
+SYSTEMD_VERSION = 249.4
 SYSTEMD_SITE = $(call github,systemd,systemd-stable,v$(SYSTEMD_VERSION))
 SYSTEMD_LICENSE = LGPL-2.1+, GPL-2.0+ (udev), Public Domain (few source files, see README), BSD-3-Clause (tools/chromiumos)
 SYSTEMD_LICENSE_FILES = LICENSE.GPL2 LICENSE.LGPL2.1 README tools/chromiumos/LICENSE
@@ -14,6 +14,7 @@ SYSTEMD_DEPENDENCIES = \
 	$(BR2_COREUTILS_HOST_DEPENDENCY) \
 	$(if $(BR2_PACKAGE_BASH_COMPLETION),bash-completion) \
 	host-gperf \
+	host-python3-jinja2 \
 	kmod \
 	libcap \
 	util-linux-libs \
@@ -72,6 +73,12 @@ SYSTEMD_DEPENDENCIES += acl
 SYSTEMD_CONF_OPTS += -Dacl=true
 else
 SYSTEMD_CONF_OPTS += -Dacl=false
+endif
+
+ifeq ($(BR2_PACKAGE_LESS),y)
+SYSTEMD_CONF_OPTS += -Durlify=true
+else
+SYSTEMD_CONF_OPTS += -Durlify=false
 endif
 
 ifeq ($(BR2_PACKAGE_LIBAPPARMOR),y)
@@ -427,6 +434,12 @@ else
 SYSTEMD_CONF_OPTS += -Dpstore=false
 endif
 
+ifeq ($(BR2_PACKAGE_SYSTEMD_OOMD),y)
+SYSTEMD_CONF_OPTS += -Doomd=true
+else
+SYSTEMD_CONF_OPTS += -Doomd=false
+endif
+
 ifeq ($(BR2_PACKAGE_SYSTEMD_POLKIT),y)
 SYSTEMD_CONF_OPTS += -Dpolkit=true
 SYSTEMD_DEPENDENCIES += polkit
@@ -438,6 +451,12 @@ ifeq ($(BR2_PACKAGE_SYSTEMD_PORTABLED),y)
 SYSTEMD_CONF_OPTS += -Dportabled=true
 else
 SYSTEMD_CONF_OPTS += -Dportabled=false
+endif
+
+ifeq ($(BR2_PACKAGE_SYSTEMD_SYSEXT),y)
+SYSTEMD_CONF_OPTS += -Dsysext=true
+else
+SYSTEMD_CONF_OPTS += -Dsysext=false
 endif
 
 ifeq ($(BR2_PACKAGE_SYSTEMD_NETWORKD),y)
@@ -577,6 +596,8 @@ endef
 define SYSTEMD_INSTALL_NSSCONFIG_HOOK
 	$(SED) '/^passwd:/ {/systemd/! s/$$/ systemd/}' \
 		-e '/^group:/ {/systemd/! s/$$/ [SUCCESS=merge] systemd/}' \
+		-e '/^shadow:/ {/systemd/! s/$$/ systemd/}' \
+		-e '/^gshadow:/ {/systemd/! s/$$/ systemd/}' \
 		$(if $(BR2_PACKAGE_SYSTEMD_RESOLVED), \
 			-e '/^hosts:/ s/[[:space:]]*mymachines//' \
 			-e '/^hosts:/ {/resolve/! s/files/files resolve [!UNAVAIL=return]/}' ) \
@@ -697,11 +718,13 @@ HOST_SYSTEMD_CONF_OPTS = \
 	-Drepart=false \
 	-Dcoredump=false \
 	-Dpstore=false \
+	-Doomd=false \
 	-Dlogind=false \
 	-Dhostnamed=false \
 	-Dlocaled=false \
 	-Dmachined=false \
 	-Dportabled=false \
+	-Dsysext=false \
 	-Duserdb=false \
 	-Dhomed=false \
 	-Dnetworkd=false \
@@ -751,7 +774,8 @@ HOST_SYSTEMD_DEPENDENCIES = \
 	host-util-linux \
 	host-patchelf \
 	host-libcap \
-	host-gperf
+	host-gperf \
+	host-python3-jinja2
 
 HOST_SYSTEMD_NINJA_ENV = DESTDIR=$(HOST_DIR)
 

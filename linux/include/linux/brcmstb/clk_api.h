@@ -28,7 +28,7 @@
  * o The following list is stored internally by AMS (without
  *   the BCLK_SW_OFFSET.
  */
-#define BCLK_SW_CPU_CORE	(BCLK_SW_OFFSET + 0x0)
+#define BCLK_SW_CPU0		(BCLK_SW_OFFSET + 0x0)
 #define BCLK_SW_V3D		(BCLK_SW_OFFSET + 0x1)
 #define BCLK_SW_SYSIF		(BCLK_SW_OFFSET + 0x2)
 #define BCLK_SW_SCB		(BCLK_SW_OFFSET + 0x3)
@@ -51,11 +51,14 @@
 #define BCLK_SW_HVD_CABAC0	(BCLK_SW_OFFSET + 0x14)
 #define BCLK_SW_AXI0		(BCLK_SW_OFFSET + 0x15)
 #define BCLK_SW_BSTM0		(BCLK_SW_OFFSET + 0x16)
+#define BCLK_SW_CPU1		(BCLK_SW_OFFSET + 0x17)
+#define BCLK_SW_CPU2		(BCLK_SW_OFFSET + 0x18)
+#define BCLK_SW_CPU3		(BCLK_SW_OFFSET + 0x19)
 /*
  * IF YOU ADD A CLK/CORE ABOVE, PLEASE UPDATE BELOW AND
  * FOLLOW THE BULLET LIST ABOVE.
  */
-#define BCLK_SW_NUM_CORES	(BCLK_SW_BSTM0 - BCLK_SW_OFFSET + 1)
+#define BCLK_SW_NUM_CORES	(BCLK_SW_CPU3 - BCLK_SW_OFFSET + 1)
 
 /* Keep some space reserved for future cores.  */
 

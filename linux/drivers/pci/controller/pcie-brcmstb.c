@@ -1426,6 +1426,9 @@ static int brcm_pcie_resume(struct device *dev)
 	if (ret)
 		return ret;
 
+	/* Take the bridge out of reset so we can access Rescal and SERDES */
+	pcie->bridge_sw_init_set(pcie, 0);
+
 	ret = reset_control_reset(pcie->rescal);
 	if (ret)
 		goto err_disable_clk;
@@ -1440,9 +1443,6 @@ static int brcm_pcie_resume(struct device *dev)
 		dev_err(pcie->dev, "failed to start phy\n");
 		goto err_reset;
 	}
-
-	/* Take bridge out of reset so we can access the SERDES reg */
-	pcie->bridge_sw_init_set(pcie, 0);
 
 	/* SERDES_IDDQ = 0 */
 	tmp = readl(base + HARD_DEBUG(pcie));
@@ -1571,30 +1571,33 @@ static int brcm_pcie_probe(struct platform_device *pdev)
 		goto clk_out;
 	}
 
+	pcie->bridge = devm_reset_control_get_optional_exclusive(&pdev->dev, "bridge");
+	if (IS_ERR(pcie->bridge)) {
+		ret = PTR_ERR(pcie->bridge);
+		goto clk_out;
+	}
+
+	/* Some chips require us to do this before accessing any registers */
+	pcie->bridge_sw_init_set(pcie, 0);
+
 	ret = reset_control_assert(pcie->swinit);
 	if (ret) {
-		goto clk_out;
+		goto bridge_reset_out;
 	} else {
 		ret = reset_control_deassert(pcie->swinit);
 		if (ret)
-			goto clk_out;
+			goto bridge_reset_out;
 	}
 
 	pcie->rescal = devm_reset_control_get_optional_shared(&pdev->dev, "rescal");
 	if (IS_ERR(pcie->rescal)) {
 		ret = PTR_ERR(pcie->rescal);
-		goto clk_out;
+		goto bridge_reset_out;
 	}
 
 	ret = reset_control_reset(pcie->rescal);
 	if (ret)
-		goto clk_out;
-
-	pcie->bridge = devm_reset_control_get_optional_exclusive(&pdev->dev, "bridge");
-	if (IS_ERR(pcie->bridge)) {
-		ret = PTR_ERR(pcie->bridge);
-		goto rescal_reset_out;
-	}
+		goto bridge_reset_out;
 
 	ret = brcm_phy_start(pcie);
 	if (ret) {
@@ -1659,6 +1662,8 @@ fail:
 
 rescal_reset_out:
 	reset_control_rearm(pcie->rescal);
+bridge_reset_out:
+	pcie->bridge_sw_init_set(pcie, 1);
 clk_out:
 	clk_disable_unprepare(pcie->clk);
 	return ret;

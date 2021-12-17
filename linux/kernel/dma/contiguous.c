@@ -399,7 +399,7 @@ static const struct reserved_mem_ops rmem_cma_ops = {
 	.device_release = rmem_cma_device_release,
 };
 
-static int __init rmem_cma_setup(struct reserved_mem *rmem)
+static int __init _rmem_cma_setup(struct reserved_mem *rmem, bool in_dmb)
 {
 	phys_addr_t align = PAGE_SIZE << max(MAX_ORDER - 1, pageblock_order);
 	phys_addr_t mask = align - 1;
@@ -428,6 +428,9 @@ static int __init rmem_cma_setup(struct reserved_mem *rmem)
 		pr_err("Reserved memory: unable to setup CMA region\n");
 		return err;
 	}
+	if (in_dmb)
+		memblock_mark_movable(rmem->base, rmem->size);
+
 	/* Architecture specific contiguous memory fixup. */
 	dma_contiguous_early_fixup(rmem->base, rmem->size);
 
@@ -437,10 +440,22 @@ static int __init rmem_cma_setup(struct reserved_mem *rmem)
 	rmem->ops = &rmem_cma_ops;
 	rmem->priv = cma;
 
-	pr_info("Reserved memory: created CMA memory pool at %pa, size %ld MiB\n",
-		&rmem->base, (unsigned long)rmem->size / SZ_1M);
+	pr_info("Reserved memory: created %s memory pool at %pa, size %ld MiB\n",
+		in_dmb ? "DMB" : "CMA", &rmem->base,
+		(unsigned long)rmem->size / SZ_1M);
 
 	return 0;
 }
+
+static int __init rmem_cma_setup(struct reserved_mem *rmem)
+{
+	return _rmem_cma_setup(rmem, 0);
+}
 RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);
+
+static int __init rmem_cma_in_dmb_setup(struct reserved_mem *rmem)
+{
+	return _rmem_cma_setup(rmem, 1);
+}
+RESERVEDMEM_OF_DECLARE(cma_in_dmb, "shared-dmb-pool", rmem_cma_in_dmb_setup);
 #endif

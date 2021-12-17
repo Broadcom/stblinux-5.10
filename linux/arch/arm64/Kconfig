@@ -296,16 +296,6 @@ config ZONE_DMA32
 	bool "Support DMA32 zone" if EXPERT
 	default y
 
-config ZONE_MOVABLE
-	bool "Enable ZONE_MOVABLE"
-	def_bool ARCH_BRCMSTB
-	depends on !NUMA
-	help
-	  The base address of a ZONE_MOVABLE zone can be defined with the
-	  kernel parameter 'movablebase' when this option is enabled. All
-	  memory pages above the movablebase physical address will be
-	  included in the zone.
-
 config ARCH_ENABLE_MEMORY_HOTPLUG
 	def_bool y
 

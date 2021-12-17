@@ -65,28 +65,6 @@ EXPORT_SYMBOL(memstart_addr);
  */
 phys_addr_t arm64_dma_phys_limit __ro_after_init;
 
-#ifdef CONFIG_ZONE_MOVABLE
-unsigned long movable_start __initdata;
-/*
- * Parses command line for movablebase= options
- */
-static int __init movablebase_setup(char *str)
-{
-	phys_addr_t addr = 0;
-	unsigned long movablebase;
-
-	addr = memparse(str, &str);
-	addr = PAGE_ALIGN(addr);
-
-	movablebase = __phys_to_pfn(addr);
-	if (movablebase && (!movable_start || movable_start > movablebase))
-		movable_start = movablebase;
-
-	return 0;
-}
-early_param("movablebase", movablebase_setup);
-#endif /* CONFIG_ZONE_MOVABLE */
-
 #ifdef CONFIG_KEXEC_CORE
 /*
  * reserve_crashkernel() - reserves memory for crash kernel
@@ -200,14 +178,21 @@ static void __init reserve_elfcorehdr(void)
 #endif /* CONFIG_CRASH_DUMP */
 
 /*
- * Return the maximum physical address for a zone with a given address size
- * limit. It currently assumes that for memory starting above 4G, 32-bit
- * devices will use a DMA offset.
+ * Return the maximum physical address for a zone accessible by the given bits
+ * limit. If DRAM starts above 32-bit, expand the zone to the maximum
+ * available memory, otherwise cap it at 32-bit.
  */
 static phys_addr_t __init max_zone_phys(unsigned int zone_bits)
 {
-	phys_addr_t offset = memblock_start_of_DRAM() & GENMASK_ULL(63, zone_bits);
-	return min(offset + (1ULL << zone_bits), memblock_end_of_DRAM());
+	phys_addr_t zone_mask = DMA_BIT_MASK(zone_bits);
+	phys_addr_t phys_start = memblock_start_of_DRAM();
+
+	if (phys_start > U32_MAX)
+		zone_mask = PHYS_ADDR_MAX;
+	else if (phys_start > zone_mask)
+		zone_mask = U32_MAX;
+
+	return min(zone_mask, memblock_end_of_DRAM() - 1) + 1;
 }
 
 static void __init zone_sizes_init(unsigned long min, unsigned long max)
@@ -216,43 +201,22 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max)
 	unsigned int __maybe_unused acpi_zone_dma_bits;
 	unsigned int __maybe_unused dt_zone_dma_bits;
 	phys_addr_t __maybe_unused dma32_phys_limit = max_zone_phys(32);
-#ifdef CONFIG_ZONE_MOVABLE
-	phys_addr_t movable_pa = __pfn_to_phys(movable_start);
-#endif
 
 #ifdef CONFIG_ZONE_DMA
 	acpi_zone_dma_bits = fls64(acpi_iort_dma_get_max_cpu_address());
 	dt_zone_dma_bits = fls64(of_dma_get_max_cpu_address(NULL));
 	zone_dma_bits = min3(32U, dt_zone_dma_bits, acpi_zone_dma_bits);
 	arm64_dma_phys_limit = max_zone_phys(zone_dma_bits);
-#ifdef CONFIG_ZONE_MOVABLE
-	if (movable_start && movable_pa < arm64_dma_phys_limit)
-		arm64_dma_phys_limit = movable_pa;
-#endif
 	max_zone_pfns[ZONE_DMA] = PFN_DOWN(arm64_dma_phys_limit);
 #endif
 #ifdef CONFIG_ZONE_DMA32
-#ifdef CONFIG_ZONE_MOVABLE
-	/* Create a ZONE_DMA32 if movable_star is above the 4GB boundary */
-	if (movable_start && movable_pa > dma32_phys_limit)
-#endif
-	{
-		max_zone_pfns[ZONE_DMA32] = PFN_DOWN(dma32_phys_limit);
-	}
+	max_zone_pfns[ZONE_DMA32] = PFN_DOWN(dma32_phys_limit);
 	if (!arm64_dma_phys_limit)
 		arm64_dma_phys_limit = dma32_phys_limit;
 #endif
 	if (!arm64_dma_phys_limit)
 		arm64_dma_phys_limit = PHYS_MASK + 1;
-
-#ifdef CONFIG_ZONE_MOVABLE
-	if (movable_start && movable_start < max)
-		max_zone_pfns[ZONE_MOVABLE] = max;
-	else
-#endif
-	{
-		max_zone_pfns[ZONE_NORMAL] = max;
-	}
+	max_zone_pfns[ZONE_NORMAL] = max;
 
 	free_area_init(max_zone_pfns);
 }

@@ -57,11 +57,21 @@ mkdir -p "${target_boot}"
 # Copy auxiliary Linux files. We have to do this at the post-image stage. If we
 # copied the files in post-build.sh, they would be included in the initrd,
 # making the kernel too large for BOLT to load.
-echo "Copying Linux configuration & symbol files for inclusion..."
+echo "Copying Linux configuration & symbol files for inclusion in tar-ball..."
 for f in Module.symvers System.map vmlinux; do
 	cp -p "${linux_dir}/${f}" "${target_boot}"
 done
 cp -p "${linux_dir}/.config" "${target_boot}/config"
+
+# Copy files for debugging purposes
+target_debug="${image_path}/debug"
+rm -rf "${target_debug}"
+mkdir "${target_debug}"
+echo "Copying vmlinux & co to aid debugging if needed..."
+# Exclude vmlinux.o, but copy other vmlinux files
+vmlinux_star=`ls "${linux_dir}/"vmlinux* | fgrep -v vmlinux.o`
+# No quotes for $vmlinux_star, since it can be a list of files.
+cp -p ${vmlinux_star} "${target_debug}"
 
 echo "Creating NFS tar-ball..."
 # We need fakeroot, so mknod doesn't complain.
