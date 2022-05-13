@@ -13,6 +13,7 @@ image_path="$1"
 output_path=`dirname "$image_path"`
 dot_config="${output_path}/.config"
 local_config="${output_path}/local.mk"
+mkpasswd="${output_path}/host/bin/mkpasswd"
 
 # References a file used by systemd
 serial_getty="${TARGET_DIR}/lib/systemd/system/serial-getty@.service"
@@ -39,7 +40,7 @@ if ! grep /bin/sh ${TARGET_DIR}/etc/shells >/dev/null; then
 fi
 
 # Set default password for root
-encrypted_passwd="`echo $DEFAULT_PASSWD | mkpasswd -s5`"
+encrypted_passwd="`echo $DEFAULT_PASSWD | $mkpasswd -s5`"
 # Using '%' as separator as that doesn't seem to occur in the encoded strings
 sed -i "s%^root::%root:$encrypted_passwd:%" ${TARGET_DIR}/etc/shadow
 

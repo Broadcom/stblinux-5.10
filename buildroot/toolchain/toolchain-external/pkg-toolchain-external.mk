@@ -68,7 +68,7 @@ TOOLCHAIN_EXTERNAL_DOWNLOAD_INSTALL_DIR = $(HOST_DIR)/opt/ext-toolchain
 ifeq ($(BR2_TOOLCHAIN_EXTERNAL_DOWNLOAD),y)
 TOOLCHAIN_EXTERNAL_INSTALL_DIR = $(TOOLCHAIN_EXTERNAL_DOWNLOAD_INSTALL_DIR)
 else
-TOOLCHAIN_EXTERNAL_INSTALL_DIR = $(call qstrip,$(BR2_TOOLCHAIN_EXTERNAL_PATH))
+TOOLCHAIN_EXTERNAL_INSTALL_DIR = $(abspath $(call qstrip,$(BR2_TOOLCHAIN_EXTERNAL_PATH)))
 endif
 
 ifeq ($(TOOLCHAIN_EXTERNAL_INSTALL_DIR),)
@@ -450,7 +450,7 @@ define TOOLCHAIN_EXTERNAL_INSTALL_SYSROOT_LIBS
 		ARCH_SUBDIR=`echo $${ARCH_SYSROOT_DIR} | sed -r -e "s:^$${SYSROOT_DIR}(.*)/$$:\1:"` ; \
 	fi ; \
 	$(call MESSAGE,"Copying external toolchain sysroot to staging...") ; \
-	$(call copy_toolchain_sysroot,$${SYSROOT_DIR},$${ARCH_SYSROOT_DIR},$${ARCH_SUBDIR},$${ARCH_LIB_DIR},$${SUPPORT_LIB_DIR},$(BR2_ROOTFS_LIB_DIR)); \
+	$(call copy_toolchain_sysroot,$${SYSROOT_DIR},$${ARCH_SYSROOT_DIR},$${ARCH_SUBDIR},$${ARCH_LIB_DIR},$${SUPPORT_LIB_DIR},$(ROOTFS_LIB_DIR)); \
 	if [ "$(BR2_ROOTFS_RUNTIME32)" = "y" ]; then \
 		$(call MESSAGE,"Copying external toolchain 32-bit libraries to staging...") ; \
 		mkdir -p "$${STAGING_DIR}/$(BR2_ROOTFS_LIB32_DIR)" \
@@ -489,9 +489,9 @@ create_lib_symlinks = \
 else
 create_lib_symlinks = \
 	$(Q)DESTDIR="$(strip $1)" ; \
-	echo "Creating $(BR2_ROOTFS_LIB64_LINK) -> $(BR2_ROOTFS_LIB_DIR) symlinks"; \
-	ln -snf $(BR2_ROOTFS_LIB_DIR) "$${DESTDIR}/$(BR2_ROOTFS_LIB64_LINK)"; \
-	ln -snf $(BR2_ROOTFS_LIB_DIR) "$${DESTDIR}/usr/$(BR2_ROOTFS_LIB64_LINK)"
+	echo "Creating $(BR2_ROOTFS_LIB64_LINK) -> $(ROOTFS_LIB_DIR) symlinks"; \
+	ln -snf $(ROOTFS_LIB_DIR) "$${DESTDIR}/$(BR2_ROOTFS_LIB64_LINK)"; \
+	ln -snf $(ROOTFS_LIB_DIR) "$${DESTDIR}/usr/$(BR2_ROOTFS_LIB64_LINK)"
 endif
 endif
 

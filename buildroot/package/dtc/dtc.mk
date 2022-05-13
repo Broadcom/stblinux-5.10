@@ -16,7 +16,7 @@ HOST_DTC_DEPENDENCIES = host-bison host-flex host-pkgconf
 
 DTC_MAKE_OPTS = \
 	PREFIX=/usr \
-	LIBDIR=/usr/$(call qstrip,$(BR2_ROOTFS_LIB_DIR)) \
+	LIBDIR=/usr/$(ROOTFS_LIB_DIR) \
 	NO_PYTHON=1 \
 	NO_VALGRIND=1
 

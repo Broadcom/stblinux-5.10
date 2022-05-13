@@ -1,5 +1,5 @@
 /*
- * Copyright © 2009-2016 Broadcom
+ * Copyright © 2009-2022 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -27,7 +27,7 @@
 #ifndef _ASM_BRCMSTB_BRCMSTB_H
 #define _ASM_BRCMSTB_BRCMSTB_H
 
-#define BRCMSTB_H_VERSION  22
+#define BRCMSTB_H_VERSION  23
 
 #if !defined(__ASSEMBLY__)
 
@@ -49,7 +49,7 @@
 #include <spaces.h>
 #endif
 
-#if defined(CONFIG_ARM_BRCMSTB_AVS_CPUFREQ) || defined(CONFIG_ARM_SCMI_CPUFREQ)
+#if IS_ENABLED(CONFIG_ARM_BRCMSTB_AVS_CPUFREQ) || IS_ENABLED(CONFIG_ARM_SCMI_CPUFREQ)
 struct brcmstb_avs_pmic_info;
 
 int brcmstb_stb_dvfs_get_pstate(unsigned int idx, unsigned int *pstate,
@@ -70,7 +70,7 @@ int brcmstb_avs_get_pmic_reg_status(u8 regulator, u16 *voltage,
 				    u16 *curr);
 #endif
 
-#if defined(CONFIG_BRCMSTB_PM) && !defined(CONFIG_MIPS)
+#if (defined(CONFIG_BRCMSTB_PM) || defined(CONFIG_BRCMSTB_PM_MODULE)) && !defined(CONFIG_MIPS)
 /*
  * Exclude a given memory range from the MAC authentication process during S3
  * suspend/resume. Ranges are reset after each MAC (i.e., after each S3

@@ -54,11 +54,13 @@
 #define BCLK_SW_CPU1		(BCLK_SW_OFFSET + 0x17)
 #define BCLK_SW_CPU2		(BCLK_SW_OFFSET + 0x18)
 #define BCLK_SW_CPU3		(BCLK_SW_OFFSET + 0x19)
+/* Do not use as clock; use BCLK_SW_DVPHT instead  */
+#define BCLK_SW_DVPHT_CORE	(BCLK_SW_OFFSET + 0x1a)
 /*
  * IF YOU ADD A CLK/CORE ABOVE, PLEASE UPDATE BELOW AND
  * FOLLOW THE BULLET LIST ABOVE.
  */
-#define BCLK_SW_NUM_CORES	(BCLK_SW_CPU3 - BCLK_SW_OFFSET + 1)
+#define BCLK_SW_NUM_CORES	(BCLK_SW_DVPHT_CORE - BCLK_SW_OFFSET + 1)
 
 /* Keep some space reserved for future cores.  */
 
@@ -73,6 +75,7 @@
 #define BCLK_SW_AIO		(BCLK_SW_OFFSET + 0x30)
 #define BCLK_SW_BVN		(BCLK_SW_OFFSET + 0x31)
 #define BCLK_SW_DVPHR		(BCLK_SW_OFFSET + 0x32)
+/* Do not use BCLK_SW_DVPHT as a core; use BCLK_SW_DVPHT_CORE instead  */
 #define BCLK_SW_DVPHT		(BCLK_SW_OFFSET + 0x33)
 #define BCLK_SW_GENET0		(BCLK_SW_OFFSET + 0x34)
 #define BCLK_SW_GENETWOL0	(BCLK_SW_OFFSET + 0x35)

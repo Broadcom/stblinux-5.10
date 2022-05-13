@@ -21,6 +21,7 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/slab.h>
+#include <linux/module.h>
 
 struct brcmstb_spi_controller {
 	const char *compat;
@@ -76,7 +77,8 @@ out_err:
 	return ret;
 }
 
-static struct device_node *brcmstb_spi_add_node(const char *full_name)
+static struct device_node *brcmstb_spi_add_node(struct device_node *parent,
+						const char *full_name)
 {
 	struct device_node *node;
 
@@ -92,7 +94,10 @@ static struct device_node *brcmstb_spi_add_node(const char *full_name)
 
 	of_node_set_flag(node, OF_DYNAMIC);
 	of_node_set_flag(node, OF_DETACHED);
-	of_node_init(node);
+#if defined(CONFIG_OF_KOBJ)
+	kobject_init(&node->kobj, parent->kobj.ktype);
+#endif
+	node->fwnode.ops = &of_fwnode_ops;
 
 	return node;
 }
@@ -125,7 +130,7 @@ static int __init brcmstb_register_spi_one(struct device_node *dn,
 			continue;
 
 		snprintf(buf, sizeof(buf), "spidev@%d", cs);
-		child = brcmstb_spi_add_node(buf);
+		child = brcmstb_spi_add_node(dn, buf);
 		if (!child) {
 			pr_err("%s: failed to duplicate node\n", __func__);
 			continue;
@@ -206,4 +211,12 @@ static int __init brcmstb_register_spi_devices(void)
 
 	return ret;
 }
+#if IS_BUILTIN(CONFIG_BRCMSTB_NEXUS_SPI)
 arch_initcall(brcmstb_register_spi_devices);
+#else
+module_init(brcmstb_register_spi_devices);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom SPI Nexus shim");
+#endif

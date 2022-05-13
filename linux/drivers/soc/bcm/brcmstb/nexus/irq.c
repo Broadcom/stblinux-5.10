@@ -19,6 +19,7 @@
 
 #include <linux/kernel.h>
 #include <linux/export.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/irqdomain.h>
@@ -164,6 +165,8 @@ int brcmstb_get_l1_irq_id(int phys_irq)
 	np = of_find_compatible_node(NULL, NULL, "arm,cortex-a15-gic");
 	if (!np)
 		np = of_find_compatible_node(NULL, NULL, "arm,gic-400");
+	if (!np)
+		np = of_find_compatible_node(NULL, NULL, "arm,gic-v3");
 
 	gic = irq_find_host(np);
 	if (!gic)
@@ -253,3 +256,7 @@ void clear_ipi_handler(int ipinr)
 	ipi->handler = NULL;
 }
 EXPORT_SYMBOL(clear_ipi_handler);
+
+MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom STB Nexus IRQ APIs");

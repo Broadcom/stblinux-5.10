@@ -30,73 +30,192 @@ static const struct of_device_id bcmasp_mdio_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, bcmasp_of_match);
 
-static inline void _intr2_mask_clear(struct bcmasp_priv *priv, u32 mask)
+static inline void _intr2_mask_clear(struct bcmasp_priv *priv, u32 mask, bool l3)
 {
-	priv->irq_mask &= ~mask;
-	intr2_core_wl(priv, mask, ASP_INTR2_MASK_CLEAR);
+	if (l3) {
+		/* Check if we need to clear l2 mask. If all L3 TX or RX are
+		 * currently masked and we are clearing a mask, then clear the
+		 * L2 mask respectively
+		 */
+		if ((mask & ASP_WIFI_INTR2_RX_SPB_DMA_MASK) &&
+		    ((priv->irq_mask_wifi & ASP_WIFI_INTR2_RX_SPB_DMA_MASK) ==
+		    ASP_WIFI_INTR2_RX_SPB_DMA_MASK)) {
+			intr2_core_wl(priv, ASP_INTR2_RX_SPB_DMA,
+				ASP_INTR2_MASK_CLEAR);
+			priv->irq_mask &= ~ASP_INTR2_RX_SPB_DMA;
+		}
+		if ((mask & ASP_WIFI_INTR2_TX_OUT_DMA_MASK) &&
+		    ((priv->irq_mask_wifi & ASP_WIFI_INTR2_TX_OUT_DMA_MASK) ==
+		    ASP_WIFI_INTR2_TX_OUT_DMA_MASK)) {
+			intr2_core_wl(priv, ASP_INTR2_TX_OUT_DMA,
+				ASP_INTR2_MASK_CLEAR);
+			priv->irq_mask &= ~ASP_INTR2_TX_OUT_DMA;
+		}
+		wifi_intr2_core_wl(priv, mask, ASP_WIFI_INTR2_MASK_CLEAR);
+		priv->irq_mask_wifi &= ~mask;
+	} else {
+		intr2_core_wl(priv, mask, ASP_INTR2_MASK_CLEAR);
+		priv->irq_mask &= ~mask;
+	}
 }
 
-static inline void _intr2_mask_set(struct bcmasp_priv *priv, u32 mask)
+static inline void _intr2_mask_set(struct bcmasp_priv *priv, u32 mask, bool l3)
 {
-	intr2_core_wl(priv, mask, ASP_INTR2_MASK_SET);
-	priv->irq_mask |= mask;
+	if (l3) {
+		wifi_intr2_core_wl(priv, mask, ASP_WIFI_INTR2_MASK_SET);
+		priv->irq_mask_wifi |= mask;
+		/* Check if we need to set l2 mask. If all L3 RX or all TX irqs
+		 * are masked, then masked L2 RX or TX respectively */
+		if ((mask & ASP_WIFI_INTR2_RX_SPB_DMA_MASK) &&
+		    (priv->irq_mask_wifi & ASP_WIFI_INTR2_RX_SPB_DMA_MASK) ==
+		    ASP_WIFI_INTR2_RX_SPB_DMA_MASK) {
+			intr2_core_wl(priv, ASP_INTR2_RX_SPB_DMA,
+				ASP_INTR2_MASK_SET);
+			priv->irq_mask |= ASP_INTR2_RX_SPB_DMA;
+		}
+		if ((mask & ASP_WIFI_INTR2_TX_OUT_DMA_MASK) &&
+		    (priv->irq_mask_wifi & ASP_WIFI_INTR2_TX_OUT_DMA_MASK) ==
+		    ASP_WIFI_INTR2_TX_OUT_DMA_MASK) {
+			intr2_core_wl(priv, ASP_INTR2_TX_OUT_DMA,
+				ASP_INTR2_MASK_SET);
+			priv->irq_mask |= ASP_INTR2_TX_OUT_DMA;
+		}
+	} else {
+		intr2_core_wl(priv, mask, ASP_INTR2_MASK_SET);
+		priv->irq_mask |= mask;
+	}
+}
+
+static inline u32 bcmasp_tx_irq_mask(struct bcmasp_intf *intf)
+{
+	if (bcmasp_intf_uses_l3(intf))
+		return ASP_WIFI_INTR2_RX_SPB_DMA(intf->channel);
+
+	return bcmasp_intf_is_xbar(intf) ? ASP_INTR2_RX_SPB_DMA :
+					   ASP_INTR2_TX_DESC(intf->channel);
+}
+
+static inline u32 bcmasp_rx_irq_mask(struct bcmasp_intf *intf)
+{
+	if (bcmasp_intf_uses_l3(intf))
+		return ASP_WIFI_INTR2_TX_OUT_DMA(intf->channel);
+
+	return bcmasp_intf_is_xbar(intf) ? ASP_INTR2_TX_OUT_DMA :
+					   ASP_INTR2_RX_ECH(intf->channel);
 }
 
 void bcmasp_enable_tx_irq(struct bcmasp_intf *intf, int en)
 {
 	struct bcmasp_priv *priv = intf->parent;
-	int ch = intf->channel;
+	u32 mask = bcmasp_tx_irq_mask(intf);
+	int l3 = bcmasp_intf_uses_l3(intf);
 
 	if (en)
-		_intr2_mask_clear(priv, ASP_INTR2_TX_DESC(ch));
+		_intr2_mask_clear(priv, mask, l3);
 	else
-		_intr2_mask_set(priv, ASP_INTR2_TX_DESC(ch));
+		_intr2_mask_set(priv, mask, l3);
 }
+EXPORT_SYMBOL_GPL(bcmasp_enable_tx_irq);
 
 void bcmasp_enable_rx_irq(struct bcmasp_intf *intf, int en)
 {
 	struct bcmasp_priv *priv = intf->parent;
-	int ch = intf->channel;
+	u32 mask = bcmasp_rx_irq_mask(intf);
+	int l3 = bcmasp_intf_uses_l3(intf);
 
 	if (en)
-		_intr2_mask_clear(priv, ASP_INTR2_RX_ECH(ch));
+		_intr2_mask_clear(priv, mask, l3);
 	else
-		_intr2_mask_set(priv, ASP_INTR2_RX_ECH(ch));
+		_intr2_mask_set(priv, mask, l3);
 }
+
+static void bcmasp_intr2_mask_set_all(struct bcmasp_priv *priv)
+{
+	_intr2_mask_set(priv, 0xffffffff, false);
+	priv->irq_mask = 0xffffffff;
+	if (!priv->legacy) {
+		_intr2_mask_set(priv, 0xffffffff, true);
+		priv->irq_mask_wifi = 0xffffffff;
+	}
+}
+
+static void bcmasp_intr2_clear_all(struct bcmasp_priv *priv)
+{
+	intr2_core_wl(priv, 0xffffffff, ASP_INTR2_CLEAR);
+
+	if (!priv->legacy)
+		wifi_intr2_core_wl(priv, 0xffffffff, ASP_WIFI_INTR2_CLEAR);
+}
+
+static inline void bcmasp_intr2_handling(struct bcmasp_intf *intf, u32 status)
+{
+	if (unlikely(intf == NULL))
+		return;
+
+	if (status & bcmasp_rx_irq_mask(intf)) {
+		if (likely(napi_schedule_prep(&intf->rx_napi))) {
+			bcmasp_enable_rx_irq(intf, 0);
+			__napi_schedule_irqoff(&intf->rx_napi);
+		}
+	}
+
+	if (status & bcmasp_tx_irq_mask(intf)) {
+		if (likely(napi_schedule_prep(&intf->tx_napi))) {
+			bcmasp_enable_tx_irq(intf, 0);
+			__napi_schedule_irqoff(&intf->tx_napi);
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(bcmasp_enable_rx_irq);
 
 static irqreturn_t bcmasp_isr(int irq, void *data)
 {
 	struct bcmasp_priv *priv = data;
 	struct bcmasp_intf *intf;
-	u32 status, i;
+	u32 status_l2, status_l3 = 0;
+	int i;
 
-	status = intr2_core_rl(priv, ASP_INTR2_STATUS) &
+	status_l2 = intr2_core_rl(priv, ASP_INTR2_STATUS) &
 		~intr2_core_rl(priv, ASP_INTR2_MASK_STATUS);
-	intr2_core_wl(priv, status, ASP_INTR2_CLEAR);
 
-	if (unlikely(status == 0)) {
-		dev_warn(&priv->pdev->dev, "spurious interrupt\n");
+	/* Grab L3 if we support it and need to */
+	if ((status_l2 & (ASP_INTR2_RX_SPB_DMA | ASP_INTR2_TX_OUT_DMA)) &&
+	    !priv->legacy) {
+		status_l3 = wifi_intr2_core_rl(priv, ASP_WIFI_INTR2_STATUS) &
+			~wifi_intr2_core_rl(priv, ASP_WIFI_INTR2_MASK_STATUS);
+		wifi_intr2_core_wl(priv, status_l3, ASP_WIFI_INTR2_CLEAR);
+
+		if (unlikely(status_l3 == 0)) {
+			dev_warn(&priv->pdev->dev, "l3 spurious interrupt\n");
+		}
+	}
+
+	intr2_core_wl(priv, status_l2, ASP_INTR2_CLEAR);
+
+	if (unlikely(status_l2 == 0)) {
+		dev_warn(&priv->pdev->dev, "l2 spurious interrupt\n");
 		return IRQ_NONE;
 	}
 
+	/* Handle intferfaces */
 	for (i = 0; i < priv->intf_count; i++) {
 		intf = priv->intfs[i];
-		if (unlikely(!intf))
-			continue;
+		bcmasp_intr2_handling(intf, status_l2);
+	}
 
-		if (status & ASP_INTR2_RX_ECH(intf->channel)) {
-			if (likely(napi_schedule_prep(&intf->rx_napi))) {
-				bcmasp_enable_rx_irq(intf, 0);
-				__napi_schedule_irqoff(&intf->rx_napi);
-			}
-		}
+	/* Handle xbars */
+	/* Legacy doesn't have L3 and at most one xbar */
+	if (priv->legacy) {
+		bcmasp_intr2_handling(priv->xbars[0], status_l2);
+		return IRQ_HANDLED;
+	}
 
-		if (status & ASP_INTR2_TX_DESC(intf->channel)) {
-			if (likely(napi_schedule_prep(&intf->tx_napi))) {
-				bcmasp_enable_tx_irq(intf, 0);
-				__napi_schedule_irqoff(&intf->tx_napi);
-			}
-		}
+	if (!status_l3)
+		return IRQ_HANDLED;
+
+	for (i = 0; i < priv->xbar_count; i++) {
+		intf = priv->xbars[i];
+		bcmasp_intr2_handling(intf, status_l3);
 	}
 
 	return IRQ_HANDLED;
@@ -113,6 +232,9 @@ void bcmasp_flush_rx_port(struct bcmasp_intf *intf)
 		break;
 	case 1:
 		mask = ASP_CTRL_UMAC1_FLUSH_MASK;
+		break;
+	case 2:
+		mask = ASP_CTRL_SPB_FLUSH_MASK;
 		break;
 	default:
 		/* Not valid port */
@@ -992,10 +1114,6 @@ static inline void bcmasp_core_init(struct bcmasp_priv *priv)
 	tx_analytics_core_wl(priv, 0x0, ASP_TX_ANALYTICS_CTRL);
 	rx_analytics_core_wl(priv, 0x4, ASP_RX_ANALYTICS_CTRL);
 
-	rx_ctrl_core_wl(priv, (ASP_RX_CTRL_S2F_DEFAULT_EN |
-		       (0xd << ASP_RX_CTRL_S2F_CHID_SHIFT)),
-			ASP_RX_CTRL_S2F);
-
 	rx_edpkt_core_wl(priv, (ASP_EDPKT_HDR_SZ_128 << ASP_EDPKT_HDR_SZ_SHIFT),
 			 ASP_EDPKT_HDR_CFG);
 	rx_edpkt_core_wl(priv,
@@ -1011,7 +1129,7 @@ static inline void bcmasp_core_init(struct bcmasp_priv *priv)
 	/* Disable and clear both UniMAC's wake-up interrupts to avoid
 	 * sticky interrupts.
 	 */
-	_intr2_mask_set(priv, ASP_INTR2_UMC0_WAKE | ASP_INTR2_UMC1_WAKE);
+	_intr2_mask_set(priv, ASP_INTR2_UMC0_WAKE | ASP_INTR2_UMC1_WAKE, false);
 	intr2_core_wl(priv, ASP_INTR2_UMC0_WAKE | ASP_INTR2_UMC1_WAKE,
 		      ASP_INTR2_CLEAR);
 }
@@ -1036,6 +1154,11 @@ static void bcmasp_core_clock_set_ll(struct bcmasp_priv *priv, u32 clr, u32 set)
 	reg &= ~clr;
 	reg |= set;
 	ctrl_core_wl(priv, reg, ASP_CTRL_CLOCK_CTRL);
+
+	reg = ctrl_core_rl(priv, ASP_CTRL_SCRATCH_0);
+	reg &= ~clr;
+	reg |= set;
+	ctrl_core_wl(priv, reg, ASP_CTRL_SCRATCH_0);
 }
 
 static void bcmasp_core_clock_set(struct bcmasp_priv *priv, u32 clr, u32 set)
@@ -1049,7 +1172,7 @@ static void bcmasp_core_clock_set(struct bcmasp_priv *priv, u32 clr, u32 set)
 
 void bcmasp_core_clock_set_intf(struct bcmasp_intf *intf, bool en)
 {
-	u32 intf_mask = ASP_CTRL_CLOCK_CTRL_ASP_RGMII_DIS(intf->channel);
+	u32 intf_mask = ASP_CTRL_CLOCK_CTRL_ASP_RGMII_DIS(intf->port);
 	struct bcmasp_priv *priv = intf->parent;
 	unsigned long flags;
 	u32 reg;
@@ -1059,6 +1182,13 @@ void bcmasp_core_clock_set_intf(struct bcmasp_intf *intf, bool en)
 	 * the last one enabled, we can turn off the shared RX and TX clocks as
 	 * well. We control enable bits which is why we test for equality on
 	 * the RGMII clock bit mask.
+	 *
+	 * There is NOT an additional bit for the UniMAC-less port, so instead
+	 * we use the scratch register can hold all bits by having that scratch
+	 * register reflect the desired value of the ASP_CTRL_CLOCK_CTRL and
+	 * we check that to know whether the UniMAC-less port is enabled or
+	 * not instead of the ASP_CTRL_CLOCK_CTRL. This allows the HW to
+	 * maintain the desired clock state.
 	 */
 	spin_lock_irqsave(&priv->clk_lock, flags);
 	if (en) {
@@ -1066,7 +1196,7 @@ void bcmasp_core_clock_set_intf(struct bcmasp_intf *intf, bool en)
 			     ASP_CTRL_CLOCK_CTRL_ASP_RX_DISABLE;
 		bcmasp_core_clock_set_ll(priv, intf_mask, 0);
 	} else {
-		reg = ctrl_core_rl(priv, ASP_CTRL_CLOCK_CTRL) | intf_mask;
+		reg = ctrl_core_rl(priv, ASP_CTRL_SCRATCH_0) | intf_mask;
 		if ((reg & ASP_CTRL_CLOCK_CTRL_ASP_RGMII_MASK) ==
 		    ASP_CTRL_CLOCK_CTRL_ASP_RGMII_MASK)
 			intf_mask |= ASP_CTRL_CLOCK_CTRL_ASP_TX_DISABLE |
@@ -1076,12 +1206,23 @@ void bcmasp_core_clock_set_intf(struct bcmasp_intf *intf, bool en)
 	spin_unlock_irqrestore(&priv->clk_lock, flags);
 }
 
+static inline int bcmasp_is_port_valid(struct bcmasp_priv *priv, int port)
+{
+	/* Quick OUTDMA sanity check
+	 * Ports 0/1 reserved for unimac
+	 * Ports 2+ reserved for outdma
+	 *  Max support is three outdma ports
+	 *  Max legacy is one outdma port
+	 */
+	return (!priv->legacy && port < 5) || port < 3;
+}
+
 static int bcmasp_probe(struct platform_device *pdev)
 {
 	struct bcmasp_priv *priv;
 	struct device_node *ports_node, *intf_node;
 	struct device *dev = &pdev->dev;
-	int ret, i, wol_irq, count = 0;
+	int ret, i, count = 0, port;
 	struct bcmasp_intf *intf;
 	struct resource *r;
 	u32 u32_reserved_filters_bitmask;
@@ -1127,6 +1268,9 @@ static int bcmasp_probe(struct platform_device *pdev)
 	spin_lock_init(&priv->clk_lock);
 	mutex_init(&priv->net_lock);
 
+	if (of_machine_is_compatible("brcm,bcm72165a0"))
+		priv->legacy = true;
+
 	ret = clk_prepare_enable(priv->clk);
 	if (ret)
 		return ret;
@@ -1137,8 +1281,8 @@ static int bcmasp_probe(struct platform_device *pdev)
 	/* Switch to the main clock */
 	bcmasp_core_clock_select(priv, false);
 
-	_intr2_mask_set(priv, 0xffffffff);
-	intr2_core_wl(priv, 0xffffffff, ASP_INTR2_CLEAR);
+	bcmasp_intr2_mask_set_all(priv);
+	bcmasp_intr2_clear_all(priv);
 
 	ret = devm_request_irq(&pdev->dev, priv->irq, bcmasp_isr, 0,
 			       pdev->name, priv);
@@ -1182,7 +1326,18 @@ static int bcmasp_probe(struct platform_device *pdev)
 		return 0;
 	}
 
-	priv->intf_count = of_get_available_child_count(ports_node);
+	for_each_available_child_of_node(ports_node, intf_node) {
+		of_property_read_u32(intf_node, "reg", &port);
+		if (!bcmasp_is_port_valid(priv, port)) {
+			dev_warn(dev, "%pOF: %d is an invalid port\n",
+				 intf_node, port);
+			continue;
+		}
+
+		priv->intf_count++;
+		if (port > 1)
+			priv->xbar_count++;
+	}
 
 	priv->intfs = devm_kcalloc(dev, priv->intf_count,
 				   sizeof(struct bcmasp_intf *),
@@ -1190,15 +1345,20 @@ static int bcmasp_probe(struct platform_device *pdev)
 	if (!priv->intfs)
 		return -ENOMEM;
 
+	priv->xbars = devm_kcalloc(dev, priv->xbar_count,
+				   sizeof(struct bcmasp_intf *),
+				   GFP_KERNEL);
+	if (!priv->xbars) {
+		kfree(priv->intfs);
+		return -ENOMEM;
+	}
+
 	/* Probe each interface (Initalization should continue even if
 	 * interfaces are unable to come up)
 	 */
 	i = 0;
-	for_each_available_child_of_node(ports_node, intf_node) {
-		wol_irq = platform_get_irq_optional(pdev, i + 1);
-		priv->intfs[i++] = bcmasp_interface_create(priv, intf_node,
-							   wol_irq);
-	}
+	for_each_available_child_of_node(ports_node, intf_node)
+		priv->intfs[i++] = bcmasp_interface_create(priv, intf_node);
 
 	/* Drop the clock reference count now and let ndo_open()/ndo_close()
 	 * manage it for us from now on.
@@ -1207,8 +1367,8 @@ static int bcmasp_probe(struct platform_device *pdev)
 
 	clk_disable_unprepare(priv->clk);
 
-	/* Now do the registration of the network ports which will take care of
-	 * managing the clock properly.
+	/* Now do the registration of the network ports minus the cross bar
+	 * which will take care of managing the clock properly.
 	 */
 	for (i = 0; i < priv->intf_count; i++) {
 		intf = priv->intfs[i];
@@ -1263,6 +1423,16 @@ static int __maybe_unused bcmasp_suspend(struct device *d)
 	unsigned int i;
 	bool wol_keep_rx_en = 0;
 	int ret = 0;
+
+	for (i = 0; i < priv->xbar_count; i++) {
+		intf = priv->xbars[i];
+		if (!intf)
+			continue;
+
+		rtnl_lock();
+		dev_close(intf->ndev);
+		rtnl_unlock();
+	}
 
 	for (i = 0; i < priv->intf_count; i++) {
 		intf = priv->intfs[i];
@@ -1325,6 +1495,16 @@ static int __maybe_unused bcmasp_resume(struct device *d)
 		ret = bcmasp_interface_resume(intf);
 		if (ret)
 			break;
+	}
+
+	for (i = 0; i < priv->xbar_count; i++) {
+		intf = priv->xbars[i];
+		if (!intf)
+			continue;
+
+		rtnl_lock();
+		ret = dev_open(intf->ndev, NULL);
+		rtnl_unlock();
 	}
 
 	return ret;

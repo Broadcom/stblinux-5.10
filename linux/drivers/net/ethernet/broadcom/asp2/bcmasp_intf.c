@@ -58,10 +58,20 @@ static inline void bcmasp_enable_tx(struct bcmasp_intf *intf, int en)
 {
 	if (en) {
 		tx_spb_ctrl_wl(intf, TX_SPB_CTRL_ENABLE_EN, TX_SPB_CTRL_ENABLE);
-		tx_epkt_core_wl(intf, (TX_EPKT_C_CFG_MISC_EN |
-				TX_EPKT_C_CFG_MISC_PT |
-			       (intf->port << TX_EPKT_C_CFG_MISC_PS_SHIFT)),
-				TX_EPKT_C_CFG_MISC);
+		if (bcmasp_intf_has_umac(intf)) {
+			tx_epkt_core_wl(intf, (TX_EPKT_C_CFG_MISC_EN |
+					TX_EPKT_C_CFG_MISC_PT |
+				       (intf->port << TX_EPKT_C_CFG_MISC_PS_SHIFT)),
+					TX_EPKT_C_CFG_MISC);
+		} else {
+
+			tx_epkt_core_wl(intf, (TX_EPKT_C_CFG_MISC_EN |
+					TX_EPKT_C_CFG_MISC_PT |
+					(0x2 << TX_EPKT_C_CFG_MISC_PS_SHIFT)) |
+					((intf->port - 2)
+					<< TX_EPKT_C_CFG_MISC_FD_SHIFT),
+					TX_EPKT_C_CFG_MISC);
+		}
 	} else {
 		tx_spb_ctrl_wl(intf, 0x0, TX_SPB_CTRL_ENABLE);
 		tx_epkt_core_wl(intf, 0x0, TX_EPKT_C_CFG_MISC);
@@ -239,7 +249,51 @@ help:
 	return skb;
 }
 
-static netdev_tx_t bcmasp_xmit(struct sk_buff *skb, struct net_device *dev)
+static inline unsigned long bcmasp_rx_edpkt_dma_rq(struct bcmasp_intf *intf)
+{
+	return rx_edpkt_dma_rq(intf, RX_EDPKT_DMA_VALID);
+}
+
+static inline void bcmasp_rx_edpkt_cfg_wq(struct bcmasp_intf *intf,
+					  dma_addr_t addr)
+{
+	rx_edpkt_cfg_wq(intf, addr, RX_EDPKT_RING_BUFFER_READ);
+}
+
+static inline bool bcmasp_rx_edpkt_data_rdy(struct bcmasp_intf *intf,
+					    dma_addr_t end_addr)
+{
+	/* Data is always ready for edpkt channels */
+	return true;
+}
+
+static inline void bcmasp_rx_edpkt_dma_wq(struct bcmasp_intf *intf,
+					  dma_addr_t addr)
+{
+	rx_edpkt_dma_wq(intf, addr, RX_EDPKT_DMA_READ);
+}
+
+static inline unsigned long bcmasp_tx_spb_dma_rq(struct bcmasp_intf *intf)
+{
+	return tx_spb_dma_rq(intf, TX_SPB_DMA_READ);
+}
+
+static inline void bcmasp_tx_spb_dma_wq(struct bcmasp_intf *intf,
+					dma_addr_t addr)
+{
+	tx_spb_dma_wq(intf, addr, TX_SPB_DMA_VALID);
+}
+
+static const struct bcmasp_intf_ops bcmasp_intf_ops = {
+	.rx_desc_read = bcmasp_rx_edpkt_dma_rq,
+	.rx_buffer_write = bcmasp_rx_edpkt_cfg_wq,
+	.rx_buffer_rdy = bcmasp_rx_edpkt_data_rdy,
+	.rx_desc_write = bcmasp_rx_edpkt_dma_wq,
+	.tx_read = bcmasp_tx_spb_dma_rq,
+	.tx_write = bcmasp_tx_spb_dma_wq,
+};
+
+netdev_tx_t bcmasp_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct bcmasp_intf *intf = netdev_priv(dev);
 	struct device *kdev = &intf->parent->pdev->dev;
@@ -275,6 +329,13 @@ static netdev_tx_t bcmasp_xmit(struct sk_buff *skb, struct net_device *dev)
 	for (i = 0; i <= nr_frags; i++) {
 		if (!i) {
 			size = skb_headlen(skb);
+			if (!nr_frags && size < (ETH_ZLEN + ETH_FCS_LEN)){
+				if (skb_put_padto(skb, ETH_ZLEN + ETH_FCS_LEN)) {
+					ret = NETDEV_TX_OK;
+					goto out;
+				}
+				size = skb->len;
+			}
 			mapping = dma_map_single(kdev, skb->data, size,
 						 DMA_TO_DEVICE);
 		} else {
@@ -332,7 +393,7 @@ static netdev_tx_t bcmasp_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	intf->tx_spb_index = spb_index;
 	intf->tx_spb_dma_valid = valid;
-	tx_spb_dma_wq(intf, intf->tx_spb_dma_valid, TX_SPB_DMA_VALID);
+	bcmasp_intf_tx_write(intf, intf->tx_spb_dma_valid);
 
 	if (tx_spb_ring_full(intf, MAX_SKB_FRAGS + 1))
 		netif_stop_queue(dev);
@@ -350,8 +411,9 @@ out:
 	spin_unlock(&intf->tx_lock);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(bcmasp_xmit);
 
-static void bcmasp_netif_start(struct net_device *dev, bool start_phy)
+static void bcmasp_netif_start(struct net_device *dev)
 {
 	struct bcmasp_intf *intf = netdev_priv(dev);
 
@@ -362,8 +424,7 @@ static void bcmasp_netif_start(struct net_device *dev, bool start_phy)
 	bcmasp_enable_rx_irq(intf, 1);
 	bcmasp_enable_tx_irq(intf, 1);
 
-	if (start_phy)
-		phy_start(dev->phydev);
+	phy_start(dev->phydev);
 }
 
 static inline void umac_reset(struct bcmasp_intf *intf)
@@ -409,9 +470,10 @@ static inline void umac_init(struct bcmasp_intf *intf)
 	umac_wl(intf, 0x800, UMC_FRM_LEN);
 	umac_wl(intf, 0xffff, UMC_PAUSE_CNTRL);
 	umac_wl(intf, 0x800, UMC_RX_MAX_PKT_SZ);
+	umac_enable_set(intf, UMC_CMD_PROMISC, 1);
 }
 
-static int bcmasp_tx_poll(struct napi_struct *napi, int budget)
+int bcmasp_tx_poll(struct napi_struct *napi, int budget)
 {
 	struct bcmasp_intf *intf =
 		container_of(napi, struct bcmasp_intf, tx_napi);
@@ -421,7 +483,7 @@ static int bcmasp_tx_poll(struct napi_struct *napi, int budget)
 	unsigned long read, released = 0;
 	dma_addr_t mapping;
 
-	read = tx_spb_dma_rq(intf, TX_SPB_DMA_READ);
+	read = bcmasp_intf_tx_read(intf);
 	while (intf->tx_spb_dma_read != read) {
 		txcb = &intf->tx_cbs[intf->tx_spb_clean_index];
 		mapping = dma_unmap_addr(txcb, dma_addr);
@@ -467,8 +529,9 @@ static int bcmasp_tx_poll(struct napi_struct *napi, int budget)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(bcmasp_tx_poll);
 
-static int bcmasp_rx_poll(struct napi_struct *napi, int budget)
+int bcmasp_rx_poll(struct napi_struct *napi, int budget)
 {
 	struct bcmasp_intf *intf =
 		container_of(napi, struct bcmasp_intf, rx_napi);
@@ -480,8 +543,9 @@ static int bcmasp_rx_poll(struct napi_struct *napi, int budget)
 	void *data;
 	u64 flags;
 	u32 len;
+	dma_addr_t buffer_end_addr;
 
-	valid = rx_edpkt_dma_rq(intf, RX_EDPKT_DMA_VALID) + 1;
+	valid = bcmasp_intf_rx_desc_read(intf) + 1;
 	if (valid == intf->rx_edpkt_dma_addr + DESC_RING_SIZE)
 		valid = intf->rx_edpkt_dma_addr;
 
@@ -506,6 +570,13 @@ static int bcmasp_rx_poll(struct napi_struct *napi, int budget)
 			intf->ndev->stats.rx_dropped++;
 			goto next;
 		}
+
+		/*
+		 * The descriptor may be ready before the data is. Do a busy
+		 * loop until the data is ready to be consumed.
+		 */
+		buffer_end_addr = DESC_ADDR(desc->buf) + desc->size;
+		while (!bcmasp_intf_rx_buffer_rdy(intf, buffer_end_addr));
 
 		dma_sync_single_for_cpu(kdev, DESC_ADDR(desc->buf), desc->size,
 					DMA_FROM_DEVICE);
@@ -544,8 +615,9 @@ static int bcmasp_rx_poll(struct napi_struct *napi, int budget)
 		intf->ndev->stats.rx_bytes += len;
 
 next:
-		rx_edpkt_cfg_wq(intf, (DESC_ADDR(desc->buf) + desc->size),
-				RX_EDPKT_RING_BUFFER_READ);
+		intf->rx_ring_dma_read = buffer_end_addr;
+		bcmasp_intf_rx_buffer_write(intf, intf->rx_ring_dma_read);
+
 		processed++;
 		intf->rx_edpkt_dma_read =
 			incr_first_byte(intf->rx_edpkt_dma_read,
@@ -555,7 +627,7 @@ next:
 						 DESC_RING_COUNT);
 	}
 
-	rx_edpkt_dma_wq(intf, intf->rx_edpkt_dma_read, RX_EDPKT_DMA_READ);
+	bcmasp_intf_rx_desc_write(intf, intf->rx_edpkt_dma_read);
 
 	if (processed < budget) {
 		napi_complete_done(&intf->rx_napi, processed);
@@ -564,6 +636,7 @@ next:
 
 	return processed;
 }
+EXPORT_SYMBOL_GPL(bcmasp_rx_poll);
 
 static void bcmasp_adj_link(struct net_device *dev)
 {
@@ -614,6 +687,9 @@ static void bcmasp_adj_link(struct net_device *dev)
 	if (!changed)
 		return;
 
+	if (!bcmasp_intf_has_umac(intf))
+		goto out;
+
 	if (phydev->link) {
 		reg = umac_rl(intf, UMC_CMD);
 		reg &= ~((UMC_CMD_SPEED_MASK << UMC_CMD_SPEED_SHIFT) |
@@ -622,20 +698,10 @@ static void bcmasp_adj_link(struct net_device *dev)
 		reg |= cmd_bits;
 		umac_wl(intf, reg, UMC_CMD);
 
-		/* Enable RGMII pad */
-		reg = rgmii_rl(intf, RGMII_OOB_CNTRL);
-		reg |= RGMII_MODE_EN;
-		rgmii_wl(intf, reg, RGMII_OOB_CNTRL);
-
 		intf->eee.eee_active = phy_init_eee(phydev, 0) >= 0;
 		bcmasp_eee_enable_set(intf, intf->eee.eee_active);
-	} else {
-		/* Disable RGMII pad */
-		reg = rgmii_rl(intf, RGMII_OOB_CNTRL);
-		reg &= ~RGMII_MODE_EN;
-		rgmii_wl(intf, reg, RGMII_OOB_CNTRL);
 	}
-
+out:
 	if (changed)
 		phy_print_status(phydev);
 }
@@ -672,11 +738,6 @@ static void bcmasp_rx_reset_ring(struct bcmasp_intf *intf)
 			RX_EDPKT_DMA_END);
 	rx_edpkt_dma_wq(intf, intf->rx_edpkt_dma_addr + (DESC_RING_SIZE - 1),
 			RX_EDPKT_DMA_VALID);
-
-	/* RX Unimac Init */
-	umac2fb_wl(intf, UMAC2FB_CFG_DEFAULT_EN |
-		  ((intf->channel + 13) << UMAC2FB_CFG_CHID_SHIFT) |
-		  (0xc << UMAC2FB_CFG_OK_SEND_SHIFT), UMAC2FB_CFG);
 }
 
 static int bcmasp_init_rx(struct bcmasp_intf *intf)
@@ -686,6 +747,7 @@ static int bcmasp_init_rx(struct bcmasp_intf *intf)
 	void *p;
 	dma_addr_t dma;
 	struct page *buffer_pg;
+	u32 reg;
 	int ret;
 
 	intf->rx_buf_order = get_order(RING_BUFFER_SIZE);
@@ -700,6 +762,7 @@ static int bcmasp_init_rx(struct bcmasp_intf *intf)
 	}
 	intf->rx_ring_cpu = page_to_virt(buffer_pg);
 	intf->rx_ring_dma = dma;
+	intf->rx_ring_dma_read = dma;
 	intf->rx_ring_dma_valid = intf->rx_ring_dma + RING_BUFFER_SIZE - 1;
 
 	p = dma_alloc_coherent(kdev, DESC_RING_SIZE, &intf->rx_edpkt_dma_addr,
@@ -716,6 +779,13 @@ static int bcmasp_init_rx(struct bcmasp_intf *intf)
 
 	bcmasp_rx_reset_ring(intf);
 
+	if (bcmasp_intf_has_umac(intf)) {
+		reg = UMAC2FB_CFG_DEFAULT_EN |
+		      ((intf->channel + 11) << UMAC2FB_CFG_CHID_SHIFT);
+		reg |= (0xd << UMAC2FB_CFG_OK_SEND_SHIFT);
+		umac2fb_wl(intf, reg, UMAC2FB_CFG);
+	}
+
 	return 0;
 
 free_rx_ring:
@@ -726,7 +796,7 @@ free_rx_ring:
 	return ret;
 }
 
-static void bcmasp_reclaim_free_all_rx(struct bcmasp_intf *intf)
+void bcmasp_reclaim_free_all_rx(struct bcmasp_intf *intf)
 {
 	struct device *kdev = &intf->parent->pdev->dev;
 
@@ -736,6 +806,7 @@ static void bcmasp_reclaim_free_all_rx(struct bcmasp_intf *intf)
 		       DMA_FROM_DEVICE);
 	__free_pages(virt_to_page(intf->rx_ring_cpu), intf->rx_buf_order);
 }
+EXPORT_SYMBOL_GPL(bcmasp_reclaim_free_all_rx);
 
 static int bcmasp_init_tx(struct bcmasp_intf *intf)
 {
@@ -791,7 +862,7 @@ free_tx_spb:
 	return ret;
 }
 
-static void bcmasp_reclaim_free_all_tx(struct bcmasp_intf *intf)
+void bcmasp_reclaim_free_all_tx(struct bcmasp_intf *intf)
 {
 	struct device *kdev = &intf->parent->pdev->dev;
 
@@ -802,6 +873,7 @@ static void bcmasp_reclaim_free_all_tx(struct bcmasp_intf *intf)
 	/* Free cbs */
 	kfree(intf->tx_cbs);
 }
+EXPORT_SYMBOL_GPL(bcmasp_reclaim_free_all_tx);
 
 static void bcmasp_ephy_enable_set(struct bcmasp_intf *intf, bool enable)
 {
@@ -829,10 +901,34 @@ static void bcmasp_ephy_enable_set(struct bcmasp_intf *intf, bool enable)
 	}
 	rgmii_wl(intf, reg, RGMII_EPHY_CNTRL);
 	mdelay(1);
+
+	/* Set or clear the LED control override to avoid lighting up LEDs
+	 * while the EPHY is powered off and drawing unnecessary current.
+	 */
+	reg = rgmii_rl(intf, RGMII_SYS_LED_CNTRL);
+	if (enable)
+		reg &= ~RGMII_SYS_LED_CNTRL_LINK_OVRD;
+	else
+		reg |= RGMII_SYS_LED_CNTRL_LINK_OVRD;
+	rgmii_wl(intf, reg, RGMII_SYS_LED_CNTRL);
 }
 
-static void bcmasp_netif_deinit(struct net_device *dev, bool stop_phy,
-				bool stop_rx)
+static void bcmasp_rgmii_mode_en_set(struct bcmasp_intf *intf, bool enable)
+{
+	u32 reg;
+
+	if (!bcmasp_intf_has_umac(intf))
+		return;
+
+	reg = rgmii_rl(intf, RGMII_OOB_CNTRL);
+	if (enable)
+		reg |= RGMII_MODE_EN;
+	else
+		reg &= ~RGMII_MODE_EN;
+	rgmii_wl(intf, reg, RGMII_OOB_CNTRL);
+}
+
+static void bcmasp_netif_deinit(struct net_device *dev, bool stop_rx)
 {
 	struct bcmasp_intf *intf = netdev_priv(dev);
 	u32 reg, timeout = 1000;
@@ -851,15 +947,16 @@ static void bcmasp_netif_deinit(struct net_device *dev, bool stop_phy,
 	} while (timeout-- > 0);
 	tx_spb_dma_wl(intf, 0x0, TX_SPB_DMA_FIFO_CTRL);
 
-	umac_enable_set(intf, UMC_CMD_TX_EN, 0);
+	if (bcmasp_intf_has_umac(intf))
+		umac_enable_set(intf, UMC_CMD_TX_EN, 0);
 
-	if (stop_phy)
-		phy_stop(dev->phydev);
+	phy_stop(dev->phydev);
 
 	/* Shut down RX */
-	umac_enable_set(intf, UMC_CMD_RX_EN, 0);
+	if (bcmasp_intf_has_umac(intf))
+		umac_enable_set(intf, UMC_CMD_RX_EN, 0);
 
-	if (stop_phy || stop_rx) {
+	if (stop_rx) {
 		bcmasp_flush_rx_port(intf);
 		usleep_range(1000, 2000);
 		bcmasp_enable_rx(intf, 0);
@@ -874,7 +971,7 @@ static void bcmasp_netif_deinit(struct net_device *dev, bool stop_phy,
 	netif_napi_del(&intf->tx_napi);
 	bcmasp_reclaim_free_all_tx(intf);
 
-	if (stop_phy || stop_rx) {
+	if (stop_rx) {
 		netif_napi_del(&intf->rx_napi);
 		bcmasp_reclaim_free_all_rx(intf);
 	}
@@ -889,13 +986,17 @@ static int bcmasp_stop(struct net_device *dev)
 	/* Stop tx from updating HW */
 	netif_tx_disable(dev);
 
-	bcmasp_netif_deinit(dev, true, true);
+	bcmasp_netif_deinit(dev, true);
 
 	phy_disconnect(dev->phydev);
 
-	/* Disable internal EPHY */
-	if (intf->internal_phy)
-		bcmasp_ephy_enable_set(intf, false);
+	/* Disable internal EPHY or external PHY */
+	if (bcmasp_intf_has_umac(intf)) {
+		if (intf->internal_phy)
+			bcmasp_ephy_enable_set(intf, false);
+		else
+			bcmasp_rgmii_mode_en_set(intf, false);
+	}
 
 	/* Disable the interface clocks */
 	bcmasp_core_clock_set_intf(intf, false);
@@ -957,33 +1058,39 @@ static int bcmasp_netif_init(struct net_device *dev, bool phy_connect,
 	/* Always enable interface clocks */
 	bcmasp_core_clock_set_intf(intf, true);
 
-	/* Enable internal PHY before any MAC activity */
-	if (intf->internal_phy)
-		bcmasp_ephy_enable_set(intf, true);
+	/* Enable internal PHY or external PHY before any MAC activity */
+	if (bcmasp_intf_has_umac(intf)) {
+		if (intf->internal_phy)
+			bcmasp_ephy_enable_set(intf, true);
+		else
+			bcmasp_rgmii_mode_en_set(intf, true);
+		bcmasp_configure_port(intf);
+	}
 
-	bcmasp_configure_port(intf);
-
-	/* This is an ugly quirk but we have not been correctly interpreting
-	 * the phy_interface values and we have done that across different
-	 * drivers, so at least we are consistent in our mistakes.
+	/* This is an ugly quirk but we have not been correctly
+	 * interpreting the phy_interface values and we have done that
+	 * across different drivers, so at least we are consistent in
+	 * our mistakes.
 	 *
-	 * When the Generic PHY driver is in use either the PHY has been
-	 * strapped or programmed correctly by the boot loader so we should
-	 * stick to our incorrect interpretation since we have validated it.
+	 * When the Generic PHY driver is in use either the PHY has
+	 * been strapped or programmed correctly by the boot loader so
+	 * we should stick to our incorrect interpretation since we
+	 * have validated it.
 	 *
-	 * Now when a dedicated PHY driver is in use, we need to reverse the
-	 * meaning of the phy_interface_mode values to something that the PHY
-	 * driver will interpret and act on such that we have two mistakes
-	 * canceling themselves so to speak. We only do this for the two
-	 * modes that GENET driver officially supports on Broadcom STB chips:
-	 * PHY_INTERFACE_MODE_RGMII and PHY_INTERFACE_MODE_RGMII_TXID. Other
-	 * modes are not *officially* supported with the boot loader and the
-	 * scripted environment generating Device Tree blobs for those
-	 * platforms.
+	 * Now when a dedicated PHY driver is in use, we need to
+	 * reverse the meaning of the phy_interface_mode values to
+	 * something that the PHY driver will interpret and act on such
+	 * that we have two mistakes canceling themselves so to speak.
+	 * We only do this for the two modes that GENET driver
+	 * officially supports on Broadcom STB chips:
+	 * PHY_INTERFACE_MODE_RGMII and PHY_INTERFACE_MODE_RGMII_TXID.
+	 * Other modes are not *officially* supported with the boot
+	 * loader and the scripted environment generating Device Tree
+	 * blobs for those platforms.
 	 *
 	 * Note that internal PHY and fixed-link configurations are not
-	 * affected because they use different phy_interface_t values or the
-	 * Generic PHY driver.
+	 * affected because they use different phy_interface_t values
+	 * or the Generic PHY driver.
 	 */
 	switch (phy_iface) {
 	case PHY_INTERFACE_MODE_RGMII:
@@ -997,8 +1104,9 @@ static int bcmasp_netif_init(struct net_device *dev, bool phy_connect,
 	}
 
 	if (phy_connect) {
-		phydev = of_phy_connect(dev, intf->phy_dn, bcmasp_adj_link,
-					phy_flags, phy_iface);
+		phydev = of_phy_connect(dev, intf->phy_dn,
+					bcmasp_adj_link, phy_flags,
+					phy_iface);
 		if (!phydev) {
 			ret = -ENODEV;
 			netdev_err(dev, "could not attach to PHY\n");
@@ -1010,14 +1118,16 @@ static int bcmasp_netif_init(struct net_device *dev, bool phy_connect,
 			goto err_phy_disable;
 	}
 
-	umac_reset(intf);
+	if (bcmasp_intf_has_umac(intf)) {
+		umac_reset(intf);
 
-	umac_init(intf);
+		umac_init(intf);
 
-	/* Disable the UniMAC RX/TX */
-	umac_enable_set(intf, (UMC_CMD_RX_EN | UMC_CMD_TX_EN), 0);
+		/* Disable the UniMAC RX/TX */
+		umac_enable_set(intf, (UMC_CMD_RX_EN | UMC_CMD_TX_EN), 0);
 
-	umac_set_hw_addr(intf, dev->dev_addr);
+		umac_set_hw_addr(intf, dev->dev_addr);
+	}
 
 	intf->old_duplex = -1;
 	intf->old_link = -1;
@@ -1042,11 +1152,13 @@ static int bcmasp_netif_init(struct net_device *dev, bool phy_connect,
 	}
 
 	/* Turn on UniMAC TX/RX */
-	umac_enable_set(intf, (UMC_CMD_RX_EN | UMC_CMD_TX_EN), 1);
+	if (bcmasp_intf_has_umac(intf)) {
+		umac_enable_set(intf, (UMC_CMD_RX_EN | UMC_CMD_TX_EN), 1);
 
-	intf->crc_fwd = !!(umac_rl(intf, UMC_CMD) & UMC_CMD_CRC_FWD);
+		intf->crc_fwd = !!(umac_rl(intf, UMC_CMD) & UMC_CMD_CRC_FWD);
+	}
 
-	bcmasp_netif_start(dev, phy_connect);
+	bcmasp_netif_start(dev);
 
 	netif_start_queue(dev);
 
@@ -1058,8 +1170,12 @@ err_phy_disconnect:
 	if (phydev)
 		phy_disconnect(phydev);
 err_phy_disable:
-	if (intf->internal_phy)
-		bcmasp_ephy_enable_set(intf, false);
+	if (bcmasp_intf_has_umac(intf)) {
+		if (intf->internal_phy)
+			bcmasp_ephy_enable_set(intf, false);
+		else
+			bcmasp_rgmii_mode_en_set(intf, false);
+	}
 	return ret;
 }
 
@@ -1129,6 +1245,18 @@ static int bcmasp_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	return phy_mii_ioctl(dev->phydev, rq, cmd);
 }
 
+static int bcmasp_set_mac_address(struct net_device *dev, void *p)
+{
+	struct sockaddr *addr = p;
+
+	if (netif_running(dev))
+		return -EBUSY;
+
+	ether_addr_copy(dev->dev_addr, addr->sa_data);
+
+	return 0;
+}
+
 static const struct net_device_ops bcmasp_netdev_ops = {
 	.ndo_open		= bcmasp_open,
 	.ndo_stop		= bcmasp_stop,
@@ -1138,7 +1266,14 @@ static const struct net_device_ops bcmasp_netdev_ops = {
 	.ndo_get_phys_port_name	= bcmasp_get_phys_port_name,
 	.ndo_get_stats		= bcmasp_get_stats,
 	.ndo_do_ioctl		= bcmasp_ioctl,
+	.ndo_set_mac_address	= bcmasp_set_mac_address,
 };
+
+bool netdev_is_bcmasp_intf(const struct net_device *dev)
+{
+	return dev->netdev_ops == &bcmasp_netdev_ops;
+}
+EXPORT_SYMBOL_GPL(netdev_is_bcmasp_intf);
 
 static inline void bcmasp_map_res(struct bcmasp_priv *priv,
 				  struct bcmasp_intf *intf)
@@ -1155,7 +1290,7 @@ static inline void bcmasp_map_res(struct bcmasp_priv *priv,
 	 * Stop gap solution. This should be removed when 72165a0 is
 	 * deprecated
 	 */
-	if (of_machine_is_compatible("brcm,bcm72165a0")) {
+	if (intf->parent->legacy) {
 		intf->res.tx_spb_top = priv->base +
 			TX_SPB_TOP_OFFSET_LEGACY(intf);
 	} else {
@@ -1179,14 +1314,13 @@ static irqreturn_t bcmasp_wol_isr(int irq, void *dev_id)
 }
 
 struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
-					    struct device_node *ndev_dn,
-					    int wol_irq)
+					    struct device_node *ndev_dn)
 {
 	struct device *dev = &priv->pdev->dev;
 	struct bcmasp_intf *intf;
 	struct net_device *ndev;
 	const void *macaddr;
-	int ch, port, ret;
+	int ch, port, ret, wol_irq;
 
 	if (of_property_read_u32(ndev_dn, "reg", &port)) {
 		dev_warn(dev, "%s: invalid ch number\n", ndev_dn->name);
@@ -1205,6 +1339,7 @@ struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
 	}
 	intf = netdev_priv(ndev);
 
+	wol_irq = platform_get_irq(priv->pdev, port + 1);
 	/* Interrupt is optional */
 	if (wol_irq > 0) {
 		intf->wol_irq_disabled = true;
@@ -1225,7 +1360,7 @@ struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
 	intf->ndev_dn = ndev_dn;
 
 	ret = of_get_phy_mode(ndev_dn, &intf->phy_interface);
-	if (ret < 0) {
+	if (ret < 0 && bcmasp_intf_has_umac(intf)) {
 		dev_err(dev, "invalid PHY mode property\n");
 		goto err_free_irq;
 	}
@@ -1247,28 +1382,30 @@ struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
 	/* Map resource */
 	bcmasp_map_res(priv, intf);
 
-	if ((!phy_interface_mode_is_rgmii(intf->phy_interface) &&
+	if (bcmasp_intf_has_umac(intf) &&
+	    ((!phy_interface_mode_is_rgmii(intf->phy_interface) &&
 	    intf->phy_interface != PHY_INTERFACE_MODE_MII &&
 	    intf->phy_interface != PHY_INTERFACE_MODE_INTERNAL) ||
-	    (intf->port != 1 && intf->internal_phy)) {
+	    (intf->port != 1 && intf->internal_phy))) {
 		netdev_err(intf->ndev, "invalid PHY mode: %s for port %d\n",
 			   phy_modes(intf->phy_interface), intf->port);
 		ret = -EINVAL;
 		goto err_free_irq;
 	}
 
-	bcmasp_reset_mib(intf);
+	if (bcmasp_intf_has_umac(intf))
+		bcmasp_reset_mib(intf);
 
 	macaddr = of_get_mac_address(ndev_dn);
-	if (!macaddr || !is_valid_ether_addr(macaddr)) {
-		dev_warn(dev, "%s: using random Ethernet MAC\n",
-			 ndev_dn->name);
+	if (IS_ERR_OR_NULL(macaddr) || !is_valid_ether_addr(macaddr)) {
+		netdev_warn(ndev, "using random Ethernet MAC\n");
 		eth_hw_addr_random(ndev);
 	} else {
 		ether_addr_copy(ndev->dev_addr, macaddr);
 	}
 
 	SET_NETDEV_DEV(ndev, dev);
+	intf->ops = &bcmasp_intf_ops;
 	ndev->netdev_ops = &bcmasp_netdev_ops;
 	ndev->ethtool_ops = &bcmasp_ethtool_ops;
 	intf->msg_enable = netif_msg_init(-1, NETIF_MSG_DRV |
@@ -1305,6 +1442,9 @@ static void bcmasp_suspend_to_wol(struct bcmasp_intf *intf)
 {
 	struct net_device *ndev = intf->ndev;
 	u32 reg;
+
+	if (!bcmasp_intf_has_umac(intf))
+		return;
 
 	reg = umac_rl(intf, UMC_MPD_CTRL);
 	if (intf->wolopts & (WAKE_MAGIC | WAKE_MAGICSECURE))
@@ -1347,15 +1487,19 @@ int bcmasp_interface_suspend(struct bcmasp_intf *intf, bool *wol_keep_rx_en)
 
 	netif_device_detach(dev);
 
-	bcmasp_netif_deinit(dev, false, !keep_rx);
+	bcmasp_netif_deinit(dev, !keep_rx);
 
 	if (!intf->wolopts) {
 		ret = phy_suspend(dev->phydev);
 		if (ret)
 			goto out;
 
-		if (intf->internal_phy)
-			bcmasp_ephy_enable_set(intf, false);
+		if (bcmasp_intf_has_umac(intf)) {
+			if (intf->internal_phy)
+				bcmasp_ephy_enable_set(intf, false);
+			else
+				bcmasp_rgmii_mode_en_set(intf, false);
+		}
 
 		/* If Wake-on-LAN is disabled, we can safely
 		 * disable the network interface clocks.
@@ -1380,6 +1524,9 @@ out:
 static void bcmasp_resume_from_wol(struct bcmasp_intf *intf)
 {
 	u32 reg;
+
+	if (!bcmasp_intf_has_umac(intf))
+		return;
 
 	reg = umac_rl(intf, UMC_MPD_CTRL);
 	reg &= ~UMC_MPD_CTRL_MPD_EN;

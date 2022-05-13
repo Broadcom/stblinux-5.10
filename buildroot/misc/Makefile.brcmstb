@@ -1,3 +1,10 @@
+# Check if we have parallel bzip2 and use it if possible.
+ifeq ($(shell which pbzip2),)
+BRCM_COMPRESS		?= bzip2
+else
+BRCM_COMPRESS		?= pbzip2
+endif
+
 BRCMSTB_OUTPUT_DIR	?= output
 BRCMSTB_RELEASE_DIR	= $(BRCMSTB_OUTPUT_DIR)/release
 
@@ -16,6 +23,7 @@ STBTOOLS_VERSION	:= $(shell grep 'default [0-9a-f]\+$$' \
 
 BINARY_DST		= $(BRCMSTB_RELEASE_DIR)/buildroot-$(VERSION)
 SRC_DST			= $(BRCMSTB_RELEASE_DIR)/src
+SRC_TARBALL		:= $(SRC_DST)/stblinux-$(DOTVERSION).tar.bz2
 
 
 # Run "make brcmstb-release RELEASE=1" for official builds. If you do, the build
@@ -47,12 +55,18 @@ brcmstb-tarball:
 	@echo "Wiping $(BRCMSTB_OUTPUT_DIR)..."
 	rm -rf $(BRCMSTB_OUTPUT_DIR)
 	test -d $(SRC_DST) || mkdir -p $(SRC_DST)
-	@echo "Creating tar-ball (without downloads)..."
-	tar -C .. -c -f $(SRC_DST)/buildroot-$(DOTVERSION).tar \
-		--exclude buildroot/.git \
-		--exclude buildroot/dl \
-		--exclude buildroot/output \
-		buildroot
+	$(Q)if [ -d .git ]; then \
+		echo "Using git archive to generate buildroot tar-ball..."; \
+		git archive --prefix=buildroot/ \
+			--output=$(SRC_DST)/buildroot-$(DOTVERSION).tar HEAD; \
+	else \
+		echo "Using tar to generate buildroot tar-ball..."; \
+		tar -C .. -c -f $(SRC_DST)/buildroot-$(DOTVERSION).tar \
+			--exclude buildroot/.git \
+			--exclude buildroot/dl \
+			--exclude buildroot/output \
+			buildroot; \
+	fi
 
 brcmstb-diffs: brcmstb-tarball
 	@if [ "$(VERSION)" = "" ]; then exit 1; fi
@@ -65,19 +79,26 @@ brcmstb-diffs: brcmstb-tarball
 		base_sha=`echo "$$git_log" | cut -d' ' -f1`; \
 		rel=`echo "$$git_log" | cut -d' ' -f4-`; \
 		echo "Base SHA is $$base_sha, release is $$rel"; \
-		git diff --diff-filter=M $${base_sha}..HEAD | bzip2 \
+		git diff --diff-filter=M $${base_sha}..HEAD | $(BRCM_COMPRESS) \
 			>$$dest/buildroot-delta-$$rel-brcm-changed.patch.bz2; \
-		git diff --diff-filter=A $${base_sha}..HEAD | bzip2 \
+		git diff --diff-filter=A $${base_sha}..HEAD | $(BRCM_COMPRESS) \
 			>$$dest/buildroot-delta-$$rel-brcm-new.patch.bz2; \
 	)
 
 linux-release:
-	@echo "Generating Linux tar-ball..."
 	test -d $(SRC_DST) || mkdir -p $(SRC_DST)
-	rm -f $(SRC_DST)/stblinux-$(DOTVERSION).tar.bz2
-	tar -C .. -c -j -f $(SRC_DST)/stblinux-$(DOTVERSION).tar.bz2 \
-		--exclude linux/.git \
-		linux
+	rm -f $(SRC_TARBALL)
+	$(Q)if [ -d $(BRCMSTB_LINUX_DIR)/.git ]; then \
+		echo "Using git archive to generate kernel tar-ball..."; \
+		git --git-dir=$(BRCMSTB_LINUX_DIR)/.git \
+			archive --prefix=linux/ --format=tar HEAD | \
+			$(BRCM_COMPRESS) >$(SRC_TARBALL); \
+	else \
+		echo "Using tar to generate kernel tar-ball..."; \
+		tar -C .. -c -f $(SRC_TARBALL) \
+			-I $(BRCM_COMPRESS) --exclude linux/.git \
+			linux; \
+	fi
 
 linux-diffs:
 	@echo "Generating Linux diffs..."
@@ -128,7 +149,7 @@ brcmstb-release: brcmstb-diffs linux-diffs linux-release
 		--exclude 'git' \
 		--exclude 'git.readme' \
 		buildroot/dl
-	bzip2 $(SRC_DST)/buildroot-$(DOTVERSION).tar
+	$(BRCM_COMPRESS) $(SRC_DST)/buildroot-$(DOTVERSION).tar
 	ln -s buildroot-$(DOTVERSION).tar.bz2 \
 		$(SRC_DST)/rootfs-$(DOTVERSION).tar.bz2
 	# Use stbtools script to generate the stbtools tar-ball, if it exists.

@@ -64,12 +64,6 @@ static int brcmstb_psci_integ_region_reset_all(void)
 	return invoke_psci_fn(SIP_FUNC_INTEG_REGION_RESET_ALL, 0, 0, 0);
 }
 
-static int psci_system_suspend(unsigned long unused)
-{
-	return invoke_psci_fn(PSCI_FN_NATIVE(1_0, SYSTEM_SUSPEND),
-			      virt_to_phys(cpu_resume), 0, 0);
-}
-
 static int brcmstb_psci_system_mem_finish(void)
 {
 	struct dma_region combined_regions[MAX_EXCLUDE + MAX_REGION + MAX_EXTRA];
@@ -105,12 +99,15 @@ static int brcmstb_psci_system_mem_finish(void)
 		}
 	}
 
-	return cpu_suspend(0, psci_system_suspend);
+	return psci_system_suspend_enter(0);
 }
 
-static void brcmstb_psci_sys_reset(enum reboot_mode reboot_mode,
-				   const char *cmd)
+static int brcmstb_psci_sys_reset(struct notifier_block *nb,
+				  unsigned long action,
+				  void *data)
 {
+	const char *cmd = data;
+
 	/*
 	 * reset_type[31] = 0 (architectural)
 	 * reset_type[30:0] = 0 (SYSTEM_WARM_RESET)
@@ -118,8 +115,9 @@ static void brcmstb_psci_sys_reset(enum reboot_mode reboot_mode,
 	 */
 	uint32_t reboot_type = 0;
 
-	if ((reboot_mode == REBOOT_COLD || reboot_mode == REBOOT_WARM ||
-	    reboot_mode == REBOOT_SOFT) &&
+
+	if ((action == REBOOT_COLD || action == REBOOT_WARM ||
+	    action == REBOOT_SOFT) &&
 	    brcmstb_psci_system_reset2_supported) {
 		if (cmd && !strcmp(cmd, "powercycle"))
 			reboot_type = BIT(31) | 1;
@@ -127,7 +125,14 @@ static void brcmstb_psci_sys_reset(enum reboot_mode reboot_mode,
 	} else {
 		invoke_psci_fn(PSCI_0_2_FN_SYSTEM_RESET, 0, 0, 0);
 	}
+
+	return NOTIFY_DONE;
 }
+
+static struct notifier_block brcmstb_psci_sys_reset_nb = {
+	.notifier_call = brcmstb_psci_sys_reset,
+	.priority = 255,
+};
 
 void brcmstb_psci_sys_poweroff(void)
 {
@@ -152,26 +157,16 @@ static int psci_features(u32 psci_func_id)
 	return invoke_psci_fn(features_func_id, psci_func_id, 0, 0);
 }
 
-static int psci_suspend_finisher(unsigned long index)
-{
-	u32 pstate = index;
-
-	return psci_ops.cpu_suspend(pstate, __pa_symbol(cpu_resume));
-}
-
 static int brcmstb_psci_enter(suspend_state_t state)
 {
 	/* Request a SYSTEM level power state with retention */
 	u32 pstate = 2 << PSCI_0_2_POWER_STATE_AFFL_SHIFT |
-		     0 << PSCI_0_2_POWER_STATE_TYPE_SHIFT;
+		     !brcmstb_psci_cpu_retention << PSCI_0_2_POWER_STATE_TYPE_SHIFT;
 	int ret = -EINVAL;
 
 	switch (state) {
 	case PM_SUSPEND_STANDBY:
-		if (brcmstb_psci_cpu_retention)
-			ret = psci_ops.cpu_suspend(pstate, 0);
-		else
-			ret = cpu_suspend(pstate, psci_suspend_finisher);
+		ret = psci_cpu_suspend_enter(pstate);
 		break;
 	case PM_SUSPEND_MEM:
 		ret = brcmstb_psci_system_suspend_supported ?
@@ -356,7 +351,7 @@ int brcmstb_pm_psci_init(void)
 		return ret;
 
 	pm_power_off = brcmstb_psci_sys_poweroff;
-	arm_pm_restart = brcmstb_psci_sys_reset;
+	register_restart_handler(&brcmstb_psci_sys_reset_nb);
 	suspend_set_ops(&brcmstb_psci_ops);
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &brcmstb_psci_nb);
@@ -366,3 +361,7 @@ int brcmstb_pm_psci_init(void)
 	return 0;
 }
 module_init(brcmstb_pm_psci_init);
+
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom STB PSCI extension");
+MODULE_LICENSE("GPL v2");

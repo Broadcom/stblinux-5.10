@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-BIND_VERSION = 9.11.35
+BIND_VERSION = 9.11.36
 BIND_SITE = https://ftp.isc.org/isc/bind9/$(BIND_VERSION)
 # bind does not support parallel builds.
 BIND_MAKE = $(MAKE1)
@@ -35,7 +35,6 @@ BIND_CONF_OPTS = \
 	--with-libjson=no \
 	--with-randomdev=/dev/urandom \
 	--enable-epoll \
-	--with-gssapi=no \
 	--enable-filter-aaaa \
 	--disable-backtrace
 
@@ -51,6 +50,13 @@ BIND_CONF_OPTS += --enable-linux-caps
 BIND_DEPENDENCIES += libcap
 else
 BIND_CONF_OPTS += --disable-linux-caps
+endif
+
+ifeq ($(BR2_PACKAGE_LIBKRB5),y)
+BIND_CONF_OPTS += --with-gssapi=$(STAGING_DIR)/usr/bin/krb5-config
+BIND_DEPENDENCIES += libkrb5
+else
+BIND_CONF_OPTS += --with-gssapi=no
 endif
 
 ifeq ($(BR2_PACKAGE_LIBXML2),y)

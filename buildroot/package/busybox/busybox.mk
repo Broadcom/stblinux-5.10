@@ -4,7 +4,7 @@
 #
 ################################################################################
 
-BUSYBOX_VERSION = 1.33.1
+BUSYBOX_VERSION = 1.35.0
 BUSYBOX_SITE = https://www.busybox.net/downloads
 BUSYBOX_SOURCE = busybox-$(BUSYBOX_VERSION).tar.bz2
 BUSYBOX_LICENSE = GPL-2.0, bzip2-1.0.4
@@ -79,14 +79,15 @@ BUSYBOX_DEPENDENCIES = \
 # to assume that the patches haven't been ported yet (but need to be), and we
 # need to alert the user to that fact.
 define BRCMSTB_PATCHES
-	$(Q)bbox_brcm_patches="$(PKGDIR)brcmstb-$(BUSYBOX_VERSION)"; \
+	$(Q)bbox_prefix="$(PKGDIR)brcmstb-patches/v"; \
+	bbox_brcm_patches="$${bbox_prefix}$(BUSYBOX_VERSION)"; \
 	if [ ! -d "$${bbox_brcm_patches}" ]; then \
 		maj_ver=`echo "$(BUSYBOX_VERSION)" | cut -d. -f1-2`; \
 		patch_ver=`echo "$(BUSYBOX_VERSION)" | cut -d. -f3`; \
 		while [ $${patch_ver} -gt 0 ]; do \
 			patch_ver=`expr $${patch_ver} - 1`; \
 			prev_ver=$${maj_ver}.$${patch_ver}; \
-			bbox_brcm_patches="$(PKGDIR)brcmstb-$${prev_ver}"; \
+			bbox_brcm_patches="$${bbox_prefix}$${prev_ver}"; \
 			if [ -d "$${bbox_brcm_patches}" ]; then \
 				break; \
 			fi; \
@@ -95,7 +96,7 @@ define BRCMSTB_PATCHES
 	if [ -d "$${bbox_brcm_patches}" ]; then \
 		echo "Found patch dir $${bbox_brcm_patches}."; \
 		$(APPLY_PATCHES) $(@D) "$${bbox_brcm_patches}" \*; \
-	elif ls $(PKGDIR)brcmstb-* >/dev/null 2>&1; then \
+	elif [ -d $(PKGDIR)brcmstb-patches ]; then \
 		echo "ERROR: couldn't find STB patches for this release!" 1>&2; \
 		exit 1; \
 	fi
@@ -124,8 +125,11 @@ BUSYBOX_MAKE_ENV += \
 endif
 
 BUSYBOX_MAKE_OPTS = \
+	AR="$(TARGET_AR)" \
+	NM="$(TARGET_NM)" \
+	RANLIB="$(TARGET_RANLIB)" \
 	CC="$(TARGET_CC)" \
-	ARCH=$(KERNEL_ARCH) \
+	ARCH=$(NORMALIZED_ARCH) \
 	PREFIX="$(TARGET_DIR)" \
 	EXTRA_LDFLAGS="$(BUSYBOX_LDFLAGS)" \
 	CROSS_COMPILE="$(TARGET_CROSS)" \
@@ -365,6 +369,12 @@ define BUSYBOX_INSTALL_TELNET_SCRIPT
 			$(TARGET_DIR)/etc/init.d/S50telnet ; \
 	fi
 endef
+define BUSYBOX_INSTALL_TELNET_SERVICE
+	if grep -q CONFIG_FEATURE_TELNETD_STANDALONE=y $(@D)/.config; then \
+		$(INSTALL) -D -m 0644 package/busybox/telnetd.service \
+			$(TARGET_DIR)/usr/lib/systemd/system/telnetd.service ; \
+	fi
+endef
 
 # Add /bin/{a,hu}sh to /etc/shells otherwise some login tools like dropbear
 # can reject the user connection. See man shells.
@@ -415,6 +425,10 @@ define BUSYBOX_INSTALL_INIT_OPENRC
 	$(BUSYBOX_INSTALL_LOGGING_SCRIPT)
 	$(BUSYBOX_INSTALL_WATCHDOG_SCRIPT)
 	$(BUSYBOX_INSTALL_TELNET_SCRIPT)
+endef
+
+define BUSYBOX_INSTALL_INIT_SYSTEMD
+	$(BUSYBOX_INSTALL_TELNET_SERVICE)
 endef
 
 define BUSYBOX_INSTALL_INIT_SYSV

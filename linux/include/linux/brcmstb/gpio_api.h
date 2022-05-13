@@ -18,7 +18,7 @@
 #ifndef _BRCMSTB_GPIO_API_H
 #define _BRCMSTB_GPIO_API_H
 
-#if IS_ENABLED(CONFIG_GPIOLIB)
+#if IS_ENABLED(CONFIG_GPIO_BRCMSTB) || IS_ENABLED(CONFIG_PINCTRL_BCM2835)
 int brcmstb_gpio_update32(uint32_t addr, uint32_t mask, uint32_t value);
 #else
 static inline int brcmstb_gpio_update32(uint32_t addr, uint32_t mask,

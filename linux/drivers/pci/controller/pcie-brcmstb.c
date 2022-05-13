@@ -158,8 +158,9 @@
 #define MDIO_PORT0			0x0
 #define MDIO_DATA_MASK			0x7fffffff
 #define MDIO_PORT_MASK			0xf0000
+#define MDIO_PORT_EXT_MASK		0x200000
 #define MDIO_REGAD_MASK			0xffff
-#define MDIO_CMD_MASK			0xfff00000
+#define MDIO_CMD_MASK			0x00100000
 #define MDIO_CMD_READ			0x1
 #define MDIO_CMD_WRITE			0x0
 #define MDIO_DATA_DONE_MASK		0x80000000
@@ -472,6 +473,7 @@ static u32 brcm_pcie_mdio_form_pkt(int port, int regad, int cmd)
 {
 	u32 pkt = 0;
 
+	pkt |= FIELD_PREP(MDIO_PORT_EXT_MASK, port >> 4);
 	pkt |= FIELD_PREP(MDIO_PORT_MASK, port);
 	pkt |= FIELD_PREP(MDIO_REGAD_MASK, regad);
 	pkt |= FIELD_PREP(MDIO_CMD_MASK, cmd);
@@ -622,7 +624,8 @@ static struct irq_chip brcm_msi_irq_chip = {
 
 static struct msi_domain_info brcm_msi_domain_info = {
 	/* Multi MSI is supported by the controller, but not by this driver */
-	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS),
+	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
+		   MSI_FLAG_MULTI_PCI_MSI),
 	.chip	= &brcm_msi_irq_chip,
 };
 
@@ -683,21 +686,22 @@ static struct irq_chip brcm_msi_bottom_irq_chip = {
 	.irq_ack                = brcm_msi_ack_irq,
 };
 
-static int brcm_msi_alloc(struct brcm_msi *msi)
+static int brcm_msi_alloc(struct brcm_msi *msi, unsigned int nr_irqs)
 {
 	int hwirq;
 
 	mutex_lock(&msi->lock);
-	hwirq = bitmap_find_free_region(&msi->used, msi->nr, 0);
+	hwirq = bitmap_find_free_region(&msi->used, msi->nr, order_base_2(nr_irqs));
 	mutex_unlock(&msi->lock);
 
 	return hwirq;
 }
 
-static void brcm_msi_free(struct brcm_msi *msi, unsigned long hwirq)
+static void brcm_msi_free(struct brcm_msi *msi, unsigned long hwirq,
+	unsigned int nr_irqs)
 {
 	mutex_lock(&msi->lock);
-	bitmap_release_region(&msi->used, hwirq, 0);
+	bitmap_release_region(&msi->used, hwirq, order_base_2(nr_irqs));
 	mutex_unlock(&msi->lock);
 }
 
@@ -705,16 +709,17 @@ static int brcm_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
 				 unsigned int nr_irqs, void *args)
 {
 	struct brcm_msi *msi = domain->host_data;
-	int hwirq;
+	int hwirq, i;
 
-	hwirq = brcm_msi_alloc(msi);
+	hwirq = brcm_msi_alloc(msi, nr_irqs);
 
 	if (hwirq < 0)
 		return hwirq;
 
-	irq_domain_set_info(domain, virq, (irq_hw_number_t)hwirq,
-			    &brcm_msi_bottom_irq_chip, domain->host_data,
-			    handle_edge_irq, NULL, NULL);
+	for (i = 0; i < nr_irqs; i++)
+		irq_domain_set_info(domain, virq + i, hwirq + i,
+				    &brcm_msi_bottom_irq_chip, domain->host_data,
+				    handle_edge_irq, NULL, NULL);
 	return 0;
 }
 
@@ -724,7 +729,7 @@ static void brcm_irq_domain_free(struct irq_domain *domain,
 	struct irq_data *d = irq_domain_get_irq_data(domain, virq);
 	struct brcm_msi *msi = irq_data_get_irq_chip_data(d);
 
-	brcm_msi_free(msi, d->hwirq);
+	brcm_msi_free(msi, d->hwirq, nr_irqs);
 }
 
 static const struct irq_domain_ops msi_domain_ops = {

@@ -2408,20 +2408,17 @@ static int moca_parse_dt_node(struct moca_priv_data *priv)
 	pd = &priv->platform_data;
 
 	/* get the common clocks from bmoca node */
-	priv->clk = devm_clk_get(priv->dev, "sw_moca");
-	if (IS_ERR(priv->clk)) {
-		if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		priv->clk = NULL;
-	};
+	priv->clk = devm_clk_get_optional(priv->dev, "sw_moca");
+	if (IS_ERR(priv->clk))
+		return PTR_ERR(priv->clk);
 
-	priv->cpu_clk = devm_clk_get(priv->dev, "sw_moca_cpu");
+	priv->cpu_clk = devm_clk_get_optional(priv->dev, "sw_moca_cpu");
 	if (IS_ERR(priv->cpu_clk))
-		priv->cpu_clk = NULL;
+		return PTR_ERR(priv->cpu_clk);
 
-	priv->phy_clk = devm_clk_get(priv->dev, "sw_moca_phy");
+	priv->phy_clk = devm_clk_get_optional(priv->dev, "sw_moca_phy");
 	if (IS_ERR(priv->phy_clk))
-		priv->phy_clk = NULL;
+		return PTR_ERR(priv->phy_clk);
 
 	priv->wol_clk = of_clk_get_by_name(of_node, "sw_mocawol");
 	if (IS_ERR(priv->wol_clk))
@@ -2442,7 +2439,7 @@ static int moca_parse_dt_node(struct moca_priv_data *priv)
 	}
 
 	macaddr = of_get_mac_address(of_node);
-	if (macaddr)
+	if (!IS_ERR(macaddr))
 		mac_to_u32(&pd->macaddr_hi, &pd->macaddr_lo, macaddr);
 
 	/* defaults for optional entries.  All other defaults are 0 */

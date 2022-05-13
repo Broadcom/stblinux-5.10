@@ -36,7 +36,7 @@ static const char * const clk_names_stb[] = {
 	/* [10..1f] */
 	"sw_smartcard1", "reserved", "sw_bne", "sw_asp",
 	"sw_hvd_cabac0", "sw_axi0", "sw_bstm", "sw_cpu1",
-	"sw_cpu2", "sw_cpu3", "reserved", "reserved",
+	"sw_cpu2", "sw_cpu3", "sw_dvpht_core", "reserved",
 	"reserved", "reserved", "reserved", "reserved",
 
 	/* [20..2f] */
@@ -82,6 +82,9 @@ static inline bool brcm_is_sw_clk(unsigned int clk_id)
 static inline int brcm_get_clk_idx(unsigned int clk_id)
 {
 	int idx = -1;
+
+	if (clk_id == BCLK_SW_DVPHT_CORE)
+		clk_id = BCLK_SW_DVPHT;
 
 	if (brcm_is_sw_clk(clk_id))
 		idx = clk_id - BCLK_SW_OFFSET;

@@ -7,6 +7,9 @@
 #include <linux/io-64-nonatomic-hi-lo.h>
 #include <uapi/linux/ethtool.h>
 
+#define ASP_SPB_RX_CHANNEL_START		6
+#define ASP_PORT_INVALID			-1
+
 #define ASP_INTR2_OFFSET			0x1000
 #define  ASP_INTR2_STATUS			0x0
 #define  ASP_INTR2_SET				0x4
@@ -15,12 +18,24 @@
 #define  ASP_INTR2_MASK_SET			0x10
 #define  ASP_INTR2_MASK_CLEAR			0x14
 
-#define ASP_INTR2_NUM_INTR			6
 #define ASP_INTR2_RX_ECH(intr)			BIT(intr)
+#define ASP_INTR2_RX_SPB_DMA			BIT(6)
+#define ASP_INTR2_TX_OUT_DMA			BIT(7)
 #define ASP_INTR2_TX_DESC(intr)			BIT((intr) + 14)
 #define ASP_INTR2_UMC0_WAKE			BIT(22)
 #define ASP_INTR2_UMC1_WAKE			BIT(28)
 
+#define ASP_WIFI_INTR2_RX_SPB_DMA(intr)		BIT((intr) - 6)
+#define ASP_WIFI_INTR2_TX_OUT_DMA(intr)		BIT((intr) - 3)
+#define ASP_WIFI_INTR2_RX_SPB_DMA_MASK		0x7
+#define ASP_WIFI_INTR2_TX_OUT_DMA_MASK		0x38
+#define ASP_WIFI_INTR2_OFFSET			0x1100
+#define  ASP_WIFI_INTR2_STATUS			0x0
+#define  ASP_WIFI_INTR2_SET			0x4
+#define  ASP_WIFI_INTR2_CLEAR			0x8
+#define  ASP_WIFI_INTR2_MASK_STATUS		0xc
+#define  ASP_WIFI_INTR2_MASK_SET		0x10
+#define  ASP_WIFI_INTR2_MASK_CLEAR		0x14
 
 #define ASP_TX_ANALYTICS_OFFSET			0x4c000
 #define  ASP_TX_ANALYTICS_CTRL			0x0
@@ -37,19 +52,10 @@
 #define ASP_RX_CTRL_FB_OUT_FRAME_COUNT		0x20
 #define ASP_RX_CTRL_FB_FILT_OUT_FRAME_COUNT	0x24
 #define ASP_RX_CTRL_FLUSH			0x28
-#define  ASP_CTRL_UMAC0_FLUSH_MASK		0x1001
-#define  ASP_CTRL_UMAC1_FLUSH_MASK		0x2002
+#define  ASP_CTRL_UMAC0_FLUSH_MASK		(BIT(0) | BIT(12))
+#define  ASP_CTRL_UMAC1_FLUSH_MASK		(BIT(1) | BIT(13))
+#define  ASP_CTRL_SPB_FLUSH_MASK		(BIT(8) | BIT(20))
 #define ASP_RX_CTRL_FB_RX_FIFO_DEPTH		0x30
-#define ASP_RX_CTRL_S2F				0x44
-#define  ASP_RX_CTRL_S2F_OPUT_EN		BIT(0)
-#define  ASP_RX_CTRL_S2F_VLN_EN			BIT(1)
-#define  ASP_RX_CTRL_S2F_SNP_EN			BIT(2)
-#define  ASP_RX_CTRL_S2F_BCM_TAG_EN		BIT(3)
-#define  ASP_RX_CTRL_S2F_CHID_SHIFT		8
-#define  ASP_RX_CTRL_S2F_DEFAULT_EN		\
-		(ASP_RX_CTRL_S2F_OPUT_EN |	\
-		ASP_RX_CTRL_S2F_VLN_EN |	\
-		ASP_RX_CTRL_S2F_SNP_EN)
 
 #define ASP_RX_FILTER_OFFSET			0x80000
 #define  ASP_RX_FILTER_BLK_CTRL			0x0
@@ -138,11 +144,12 @@ enum asp_rx_net_filter_block {
 #define   ASP_CTRL_CLOCK_CTRL_ASP_TX_DISABLE	BIT(0)
 #define   ASP_CTRL_CLOCK_CTRL_ASP_RX_DISABLE	BIT(1)
 #define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII_SHIFT	2
-#define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII_MASK	(0x3 << ASP_CTRL_CLOCK_CTRL_ASP_RGMII_SHIFT)
+#define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII_MASK	(0x7 << ASP_CTRL_CLOCK_CTRL_ASP_RGMII_SHIFT)
 #define   ASP_CTRL_CLOCK_CTRL_ASP_RGMII_DIS(x)	BIT(ASP_CTRL_CLOCK_CTRL_ASP_RGMII_SHIFT + (x))
-#define   ASP_CTRL_CLOCK_CTRL_ASP_ALL_DISABLE	GENMASK(3, 0)
+#define   ASP_CTRL_CLOCK_CTRL_ASP_ALL_DISABLE	GENMASK(4, 0)
 #define  ASP_CTRL_CORE_CLOCK_SELECT		0x08
 #define   ASP_CTRL_CORE_CLOCK_SELECT_MAIN	BIT(0)
+#define  ASP_CTRL_SCRATCH_0			0x0c
 
 struct bcmasp_tx_cb {
 	struct sk_buff		*skb;
@@ -165,6 +172,11 @@ struct bcmasp_res {
 	void __iomem		*tx_spb_top;
 	void __iomem		*tx_epkt_core;
 	void __iomem		*tx_pause_ctrl;
+
+	/* RX_SPB */
+	void __iomem		*rx_spb_ctrl;
+	void __iomem		*rx_spb_top;
+	void __iomem		*rx_pause_ctrl;
 };
 
 #define DESC_ADDR(x)		((x) & GENMASK_ULL(39, 0))
@@ -306,6 +318,17 @@ struct bcmasp_mib_counters {
 	u32	tx_realloc_offload;
 };
 
+struct bcmasp_intf;
+
+struct bcmasp_intf_ops {
+	unsigned long (*rx_desc_read)(struct bcmasp_intf *intf);
+	void (*rx_buffer_write)(struct bcmasp_intf *intf, dma_addr_t addr);
+	bool (*rx_buffer_rdy)(struct bcmasp_intf *intf, dma_addr_t end_addr);
+	void (*rx_desc_write)(struct bcmasp_intf *intf, dma_addr_t addr);
+	unsigned long (*tx_read)(struct bcmasp_intf *intf);
+	void (*tx_write)(struct bcmasp_intf *intf, dma_addr_t addr);
+};
+
 struct bcmasp_intf {
 	struct net_device	*ndev;
 	struct bcmasp_priv	*parent;
@@ -313,10 +336,14 @@ struct bcmasp_intf {
 	/* ASP Ch */
 	int			channel;
 	int			port;
+	const struct bcmasp_intf_ops	*ops;
 
 	struct napi_struct	tx_napi;
 	/* TX ring, starts on a new cacheline boundary */
-	void __iomem		*tx_spb_dma;
+	union {
+		void __iomem	*tx_spb_dma;
+		void __iomem	*rx_spb_dma;
+	};
 	int			tx_spb_index;
 	int			tx_spb_clean_index;
 	struct bcmasp_desc	*tx_spb_cpu;
@@ -328,7 +355,10 @@ struct bcmasp_intf {
 
 	/* RX ring, starts on a new cacheline boundary */
 	void __iomem		*rx_edpkt_cfg;
-	void __iomem		*rx_edpkt_dma;
+	union {
+		void __iomem	*rx_edpkt_dma;
+		void __iomem	*outdma;
+	};
 	int			rx_edpkt_index;
 	int			rx_buf_order;
 	struct bcmasp_desc	*rx_edpkt_cpu;
@@ -339,10 +369,18 @@ struct bcmasp_intf {
 	void			*rx_ring_cpu;
 	dma_addr_t		rx_ring_dma;
 	dma_addr_t		rx_ring_dma_valid;
+	dma_addr_t		rx_ring_dma_read;
 	struct napi_struct	rx_napi;
 
 	struct bcmasp_res	res;
 	unsigned int		crc_fwd;
+
+	/* For the SPB_RX E-channel interface, the lower points to the xbar,
+	 * and for the xbar, the upper points to the SPB_RX E-channel
+	 * interface.
+	 */
+	struct net_device	*lowerdev;
+	struct net_device	*upperdev;
 
 	/* PHY device */
 	struct device_node	*phy_dn;
@@ -366,48 +404,6 @@ struct bcmasp_intf {
 
 	struct ethtool_eee	eee;
 };
-
-#define __BCMASP_IO_MACRO(name, m)					\
-static inline u32 name##_rl(struct bcmasp_intf *intf, u32 off)		\
-{									\
-	u32 reg = readl_relaxed(intf->m + off);			\
-	return reg;							\
-}									\
-static inline void name##_wl(struct bcmasp_intf *intf, u32 val, u32 off)\
-{									\
-	writel_relaxed(val, intf->m + off);				\
-}
-
-#define BCMASP_IO_MACRO(name)		__BCMASP_IO_MACRO(name, res.name)
-#define BCMASP_FP_IO_MACRO(name)	__BCMASP_IO_MACRO(name, name)
-
-BCMASP_IO_MACRO(umac);
-BCMASP_IO_MACRO(umac2fb);
-BCMASP_IO_MACRO(rgmii);
-BCMASP_FP_IO_MACRO(tx_spb_dma);
-BCMASP_IO_MACRO(tx_spb_ctrl);
-BCMASP_IO_MACRO(tx_spb_top);
-BCMASP_IO_MACRO(tx_epkt_core);
-BCMASP_IO_MACRO(tx_pause_ctrl);
-BCMASP_FP_IO_MACRO(rx_edpkt_dma);
-BCMASP_FP_IO_MACRO(rx_edpkt_cfg);
-
-#define __BCMASP_FP_IO_MACRO_Q(name, m)					\
-static inline u64 name##_rq(struct bcmasp_intf *intf, u32 off)		\
-{									\
-	u64 reg = readq_relaxed(intf->m + off);				\
-	return reg;							\
-}									\
-static inline void name##_wq(struct bcmasp_intf *intf, u64 val, u32 off)\
-{									\
-	writeq_relaxed(val, intf->m + off);				\
-}
-
-#define BCMASP_FP_IO_MACRO_Q(name)	__BCMASP_FP_IO_MACRO_Q(name, name)
-
-BCMASP_FP_IO_MACRO_Q(tx_spb_dma);
-BCMASP_FP_IO_MACRO_Q(rx_edpkt_dma);
-BCMASP_FP_IO_MACRO_Q(rx_edpkt_cfg);
 
 #define ASP_RX_NET_FILTER_MAX		32
 #define ASP_MAX_FILTER_SIZE		128
@@ -437,11 +433,17 @@ struct bcmasp_priv {
 
 	int				irq;
 	u32				irq_mask;
+	u32				irq_mask_wifi;
 
 	void __iomem			*base;
 
 	unsigned int			intf_count;
 	struct bcmasp_intf		**intfs;
+
+	bool				legacy;
+	unsigned int			xbar_count;
+	unsigned int			xbar_inited_count;
+	struct bcmasp_intf		**xbars;
 
 	struct bcmasp_mda_filter	mda_filters[ASP_RX_FILTER_MAX];
 	unsigned int			filters_count;
@@ -456,6 +458,103 @@ struct bcmasp_priv {
 	unsigned int			net_filters_count_max;
 	struct mutex			net_lock;
 };
+
+static inline unsigned long bcmasp_intf_rx_desc_read(struct bcmasp_intf *intf)
+{
+	return intf->ops->rx_desc_read(intf);
+}
+
+static inline void bcmasp_intf_rx_buffer_write(struct bcmasp_intf *intf,
+					       dma_addr_t addr)
+{
+	intf->ops->rx_buffer_write(intf, addr);
+}
+
+static inline bool bcmasp_intf_rx_buffer_rdy(struct bcmasp_intf *intf,
+					     dma_addr_t end_addr)
+{
+	return intf->ops->rx_buffer_rdy(intf, end_addr);
+}
+
+static inline void bcmasp_intf_rx_desc_write(struct bcmasp_intf *intf,
+					     dma_addr_t addr)
+{
+	intf->ops->rx_desc_write(intf, addr);
+}
+
+static inline unsigned long bcmasp_intf_tx_read(struct bcmasp_intf *intf)
+{
+	return intf->ops->tx_read(intf);
+}
+
+static inline void bcmasp_intf_tx_write(struct bcmasp_intf *intf, dma_addr_t addr)
+{
+	intf->ops->tx_write(intf, addr);
+}
+
+static inline bool bcmasp_intf_is_xbar(struct bcmasp_intf *intf)
+{
+	return intf->port == ASP_PORT_INVALID;
+}
+
+static inline bool bcmasp_intf_has_umac(struct bcmasp_intf *intf)
+{
+	return intf->port != ASP_PORT_INVALID && intf->port < 2;
+}
+
+static inline bool bcmasp_intf_uses_l3(struct bcmasp_intf *intf)
+{
+	return bcmasp_intf_is_xbar(intf) && !intf->parent->legacy;
+}
+
+#define __BCMASP_IO_MACRO(name, m)					\
+static inline u32 name##_rl(struct bcmasp_intf *intf, u32 off)		\
+{									\
+	u32 reg = readl_relaxed(intf->m + off);				\
+	return reg;							\
+}									\
+static inline void name##_wl(struct bcmasp_intf *intf, u32 val, u32 off)\
+{									\
+	writel_relaxed(val, intf->m + off);				\
+}
+
+#define BCMASP_IO_MACRO(name)		__BCMASP_IO_MACRO(name, res.name)
+#define BCMASP_FP_IO_MACRO(name)	__BCMASP_IO_MACRO(name, name)
+
+BCMASP_IO_MACRO(umac);
+BCMASP_IO_MACRO(umac2fb);
+BCMASP_IO_MACRO(rgmii);
+BCMASP_FP_IO_MACRO(tx_spb_dma);
+BCMASP_IO_MACRO(tx_spb_ctrl);
+BCMASP_IO_MACRO(tx_spb_top);
+BCMASP_IO_MACRO(tx_epkt_core);
+BCMASP_IO_MACRO(tx_pause_ctrl);
+BCMASP_FP_IO_MACRO(rx_edpkt_dma);
+BCMASP_FP_IO_MACRO(rx_edpkt_cfg);
+BCMASP_IO_MACRO(rx_spb_ctrl);
+BCMASP_IO_MACRO(rx_spb_top);
+BCMASP_IO_MACRO(rx_pause_ctrl);
+BCMASP_FP_IO_MACRO(outdma);
+BCMASP_FP_IO_MACRO(rx_spb_dma);
+
+#define __BCMASP_FP_IO_MACRO_Q(name, m)					\
+static inline u64 name##_rq(struct bcmasp_intf *intf, u32 off)		\
+{									\
+	u64 reg = readq_relaxed(intf->m + off);				\
+	return reg;							\
+}									\
+static inline void name##_wq(struct bcmasp_intf *intf, u64 val, u32 off)\
+{									\
+	writeq_relaxed(val, intf->m + off);				\
+}
+
+#define BCMASP_FP_IO_MACRO_Q(name)	__BCMASP_FP_IO_MACRO_Q(name, name)
+
+BCMASP_FP_IO_MACRO_Q(tx_spb_dma);
+BCMASP_FP_IO_MACRO_Q(rx_edpkt_dma);
+BCMASP_FP_IO_MACRO_Q(rx_edpkt_cfg);
+BCMASP_FP_IO_MACRO_Q(rx_spb_dma);
+BCMASP_FP_IO_MACRO_Q(outdma);
 
 #define PKT_OFFLOAD_NOP			(0 << 28)
 #define PKT_OFFLOAD_HDR_OP		(1 << 28)
@@ -501,6 +600,7 @@ static inline void name##_core_wl(struct bcmasp_priv *priv,		\
 }
 
 BCMASP_CORE_IO_MACRO(intr2, ASP_INTR2_OFFSET);
+BCMASP_CORE_IO_MACRO(wifi_intr2, ASP_WIFI_INTR2_OFFSET);
 BCMASP_CORE_IO_MACRO(tx_analytics, ASP_TX_ANALYTICS_OFFSET);
 BCMASP_CORE_IO_MACRO(rx_analytics, ASP_RX_ANALYTICS_OFFSET);
 BCMASP_CORE_IO_MACRO(rx_ctrl, ASP_RX_CTRL_OFFSET);
@@ -509,8 +609,7 @@ BCMASP_CORE_IO_MACRO(rx_edpkt, ASP_EDPKT_OFFSET);
 BCMASP_CORE_IO_MACRO(ctrl, ASP_CTRL);
 
 struct bcmasp_intf *bcmasp_interface_create(struct bcmasp_priv *priv,
-					    struct device_node *ndev_dn,
-					    int wol_irq);
+					    struct device_node *ndev_dn);
 
 void bcmasp_interface_destroy(struct bcmasp_intf *intf, bool unregister);
 
@@ -561,5 +660,17 @@ int bcmasp_netfilt_get_max(struct bcmasp_intf *intf);
 void bcmasp_netfilt_suspend(struct bcmasp_intf *intf);
 
 void bcmasp_eee_enable_set(struct bcmasp_intf *intf, bool enable);
+
+int bcmasp_rx_poll(struct napi_struct *napi, int budget);
+
+int bcmasp_tx_poll(struct napi_struct *napi, int budget);
+
+netdev_tx_t bcmasp_xmit(struct sk_buff *skb, struct net_device *dev);
+
+void bcmasp_reclaim_free_all_rx(struct bcmasp_intf *intf);
+
+void bcmasp_reclaim_free_all_tx(struct bcmasp_intf *intf);
+
+bool netdev_is_bcmasp_intf(const struct net_device *dev);
 
 #endif

@@ -21,7 +21,7 @@ u32 brcmstb_get_product_id(void);
 
 int brcmstb_regsave_init(void);
 
-#ifdef CONFIG_BRCMSTB_MEMORY_API
+#if IS_ENABLED(CONFIG_BRCMSTB_MEMORY_API)
 int brcmstb_memory_phys_addr_to_memc(phys_addr_t pa);
 u64 brcmstb_memory_memc_size(unsigned int memc);
 #else

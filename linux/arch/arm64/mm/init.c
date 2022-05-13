@@ -43,7 +43,7 @@
 #include <asm/tlb.h>
 #include <asm/alternative.h>
 
-#ifdef CONFIG_BRCMSTB_MEMORY_API
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
 #include <linux/brcmstb/memory_api.h>
 #endif
 
@@ -409,7 +409,7 @@ void __init arm64_memblock_init(void)
 
 	early_init_fdt_scan_reserved_mem();
 
-#ifdef CONFIG_BRCMSTB_MEMORY_API
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
 	brcmstb_memory_init();
 #endif
 	reserve_elfcorehdr();
