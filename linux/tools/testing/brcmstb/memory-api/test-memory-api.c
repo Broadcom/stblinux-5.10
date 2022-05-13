@@ -26,23 +26,44 @@ static void test_kva_mem_map(struct brcmstb_range *range)
 
 	addr = brcmstb_memory_kva_map_phys(range->addr, size, true);
 	if (!addr) {
-		pr_err("failed to map %llu MiB at %#016llx\n",
+		pr_err("failed to map cached %llu MiB at %#016llx\n",
 		       (unsigned long long)size / SZ_1M, range->addr);
 		return;
+	} else {
+
+		pr_info("%s: cached virt: %px, phys: 0x%llx\n",
+                      __func__, addr, (unsigned long long)virt_to_phys(addr));
+
+		/* Now try to read from there as well */
+		data = addr;
+		*data = 0xdeadbeefUL;
+		check = *data;
+		if (check != 0xdeadbeefUL)
+			pr_err("memory mismatch: %llu != %llu\n",
+			       (unsigned long long)check, 0xdeadbeefULL);
+
+		brcmstb_memory_kva_unmap(addr);
 	}
 
-	pr_info("%s: virt: %p, phys: 0x%llx\n",
-		__func__, addr, (unsigned long long)virt_to_phys(addr));
+	addr = brcmstb_memory_kva_map_phys(range->addr, size, false);
+	if (!addr) {
+		pr_err("failed to map uncached %llu MiB at %#016llx\n",
+		       (unsigned long long)size / SZ_1M, range->addr);
+	} else {
 
-	/* Now try to read from there as well */
-	data = addr;
-	*data = 0xdeadbeefUL;
-	check = *data;
-	if (check != 0xdeadbeefUL)
-		pr_err("memory mismatch: %llu != %llu\n",
-			(unsigned long long)check, 0xdeadbeefULL);
+		pr_info("%s: uncached virt: %px, phys: 0x%llx\n",
+                      __func__, addr, (unsigned long long)virt_to_phys(addr));
 
-	brcmstb_memory_kva_unmap(addr);
+		/* Now try to read from there as well */
+		data = addr;
+		*data = 0xdeadbeefUL;
+		check = *data;
+		if (check != 0xdeadbeefUL)
+			pr_err("memory mismatch: %llu != %llu\n",
+			       (unsigned long long)check, 0xdeadbeefULL);
+
+		brcmstb_memory_kva_unmap(addr);
+	}
 }
 #endif
 
@@ -172,6 +193,8 @@ static int __init test_init(void)
 		pr_info(" %#016llx-%#016llx (%s)\n",
 				range->addr, range->addr + range->size,
 				nrange->name);
+		if (!strncmp(nrange->name, "bmem", 4))
+			test_kva_mem_map(range);
 	}
 	pr_info("bhpa info:\n");
 	for (i = 0; i < bm.bhpa.count; ++i) {

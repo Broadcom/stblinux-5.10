@@ -156,7 +156,7 @@ static const char  *msg_id_to_str(int proto, unsigned int id)
 static const char *event_type_to_str(enum event_type evtype)
 {
 	static const char *evtype_strs[]
-		= {"Scmi", "Psci", "Avs", "Cpufreq", "String_io"};
+		= {"Scmi", "Psci", "Avs", "Cpufreq", "String_io", "Smc"};
 
 	int n = STR_ARRAY_SIZE(evtype_strs);
 
@@ -202,16 +202,23 @@ void prn_event_decoded(struct trace_header *th, struct event *evp,
 	       event_source_to_str(EVID_SOURCE(evp->event_id)),
 	       event_type_to_str(EVID_TYPE(evp->event_id)));
 
-	if (EVID_TYPE(evp->event_id) == STRING_IO) {
+	switch (EVID_TYPE(evp->event_id)) {
+	case STRING_IO:
 		printf(" str: %s\n", (char *) evp->params);
-	} else {
+		break;
+	case SCMI:
+	case PSCI:
+	case AVS:
+	case CPUFREQ:
 		printf("%s %s ", proto_to_str(evp->params[0]),
 		       msg_id_to_str(evp->params[0], evp->params[1]));
 		if (evp->params[0] == SCMI_PROTOCOL_CLOCK &&
 		    evp->params[1] == CLOCK_CONFIG_SET) {
+			char buf[32];
+
+			trace_decode_clk_name(evp->params[2], buf, sizeof(buf));
 			printf("clk_%sable(%s)\n",
-			       (evp->params[3] & 0x1) ? "en" : "dis",
-			       trace_decode_clk_name(evp->params[2]));
+			       (evp->params[3] & 0x1) ? "en" : "dis", buf);
 		} else if (evp->params[0] == SCMI_PROTOCOL_PERF
 			   && (evp->params[1] == PERF_LEVEL_SET
 			       || evp->params[1] == PERF_LEVEL_GET)) {
@@ -231,5 +238,8 @@ void prn_event_decoded(struct trace_header *th, struct event *evp,
 				printf("%d ", evp->params[i]);
 			printf("]\n");
 		}
+		break;
+	case SMC:
+		printf(" fid:%x cpu:%x\n", evp->params[0], evp->params[1]);
 	}
 }

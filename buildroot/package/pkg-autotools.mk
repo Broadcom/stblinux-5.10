@@ -160,10 +160,6 @@ ifeq ($(4),host)
  $(2)_AUTORECONF_OPTS ?= $$($(3)_AUTORECONF_OPTS)
 endif
 
-$(2)_CONF_ENV			?=
-$(2)_CONF_OPTS			?=
-$(2)_MAKE_ENV			?=
-$(2)_MAKE_OPTS			?=
 $(2)_INSTALL_OPTS                ?= install
 $(2)_INSTALL_STAGING_OPTS	?= DESTDIR=$$(STAGING_DIR) install
 $(2)_INSTALL_TARGET_OPTS		?= DESTDIR=$$(TARGET_DIR) install
@@ -189,7 +185,7 @@ define $(2)_CONFIGURE_CMDS
 		--build=$$(GNU_HOST_NAME) \
 		--prefix=/usr \
 		--exec-prefix=/usr \
-		--libdir='$$$${exec_prefix}/$(call qstrip,$(BR2_ROOTFS_LIB_DIR))' \
+		--libdir='$$$${exec_prefix}/$(ROOTFS_LIB_DIR)' \
 		--sysconfdir=/etc \
 		--localstatedir=/var \
 		--program-prefix="" \

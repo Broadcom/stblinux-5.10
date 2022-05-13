@@ -12,9 +12,11 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
  */
+#include <linux/export.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/printk.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/syscore_ops.h>
@@ -154,3 +156,8 @@ fail:
 	of_node_put(dn);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(brcmstb_regsave_init);
+
+MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom STB register saving helpers");

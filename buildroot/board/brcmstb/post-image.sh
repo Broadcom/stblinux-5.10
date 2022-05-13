@@ -15,6 +15,12 @@ if [ $# -lt 2 ]; then
 	exit 1
 fi
 
+if which pbzip2 >/dev/null 2>&1; then
+	BRCM_COMPRESS=${BRCM_COMPRESS:-pbzip2}
+else
+	BRCM_COMPRESS=${BRCM_COMPRESS:-bzip2}
+fi
+
 image_path="$1"
 linux_ver="$2"
 # The output directory is one level up from the image directory.
@@ -69,14 +75,17 @@ rm -rf "${target_debug}"
 mkdir "${target_debug}"
 echo "Copying vmlinux & co to aid debugging if needed..."
 # Exclude vmlinux.o, but copy other vmlinux files
-vmlinux_star=`ls "${linux_dir}/"vmlinux* | fgrep -v vmlinux.o`
-# No quotes for $vmlinux_star, since it can be a list of files.
-cp -p ${vmlinux_star} "${target_debug}"
+for f in `ls "${linux_dir}/"vmlinux* | fgrep -v vmlinux.o`; do
+	b=`basename "${f}"`
+	n=`echo "${b}" | sed -e "s/vmlinux/vmlinux-${arch}/"`
+	cp -p "${f}" "${target_debug}/${n}"
+done
 
 echo "Creating NFS tar-ball..."
 # We need fakeroot, so mknod doesn't complain.
 fakeroot tar -C "$image_path/romfs" -x -f "$rootfs_tar"
-(cd "$image_path"; tar -c -f "$nfs_tar.bz2" -j --owner 0 --group 0 romfs)
+tar -C "$image_path" -c -f "$image_path/$nfs_tar.bz2" \
+	-I $BRCM_COMPRESS --owner 0 --group 0 romfs
 rm -rf "$image_path/romfs"
 rm -f "${rootfs_tar}"
 

@@ -193,13 +193,38 @@ static const struct bcmasp_stats bcmasp_gstrings_stats[] = {
 
 #define BCMASP_STATS_LEN	ARRAY_SIZE(bcmasp_gstrings_stats)
 
+static bool bcmasp_stat_available(struct bcmasp_intf *intf,
+				  enum bcmasp_stat_type type)
+{
+	if (!bcmasp_intf_has_umac(intf) &&
+	    type >= BCMASP_STAT_MIB_RX && type <= BCMASP_STAT_RUNT)
+		return false;
+
+	return true;
+}
+
 static int bcmasp_get_sset_count(struct net_device *dev, int string_set)
 {
+	struct bcmasp_intf *intf = netdev_priv(dev);
+	const struct bcmasp_stats *s;
+	int i, j = 0;
+
 	switch (string_set) {
 	case ETH_SS_STATS:
-		return BCMASP_STATS_LEN;
+		if (bcmasp_intf_has_umac(intf))
+			return BCMASP_STATS_LEN;
+
+		for (i = 0; i < BCMASP_STATS_LEN; i++) {
+			s = &bcmasp_gstrings_stats[i];
+			if (!bcmasp_stat_available(intf, s->type))
+				continue;
+			j++;
+		}
+		return j;
 	case ETH_SS_PRIV_FLAGS:
-		return BCMASP_PRIV_FLAGS_COUNT;
+		if (bcmasp_intf_has_umac(intf))
+			return BCMASP_PRIV_FLAGS_COUNT;
+		return 0;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -208,14 +233,20 @@ static int bcmasp_get_sset_count(struct net_device *dev, int string_set)
 static void bcmasp_get_strings(struct net_device *dev, u32 stringset,
 			       u8 *data)
 {
-	int i;
+	struct bcmasp_intf *intf = netdev_priv(dev);
+	const struct bcmasp_stats *s;
+	int i, j = 0;
 
 	switch (stringset) {
 	case ETH_SS_STATS:
 		for (i = 0; i < BCMASP_STATS_LEN; i++) {
-			memcpy(data + i * ETH_GSTRING_LEN,
-			       bcmasp_gstrings_stats[i].stat_string,
+			s = &bcmasp_gstrings_stats[i];
+			if (!bcmasp_stat_available(intf, s->type))
+				continue;
+
+			memcpy(data + j * ETH_GSTRING_LEN, s->stat_string,
 			       ETH_GSTRING_LEN);
+			j++;
 		}
 		break;
 	case ETH_SS_PRIV_FLAGS:
@@ -225,6 +256,8 @@ static void bcmasp_get_strings(struct net_device *dev, u32 stringset,
 			       ETH_GSTRING_LEN);
 		}
 		break;
+	default:
+		return;
 	}
 }
 
@@ -250,6 +283,8 @@ static void bcmasp_update_mib_counters(struct bcmasp_intf *priv)
 			offset += BCMASP_STAT_OFFSET;
 			/* fall through */
 		case BCMASP_STAT_MIB_RX:
+			if (!bcmasp_intf_has_umac(priv))
+				continue;
 			val = umac_rl(priv, UMC_MIB_START + j + offset);
 			offset = 0;	/* Reset Offset */
 			break;
@@ -275,7 +310,7 @@ static void bcmasp_get_ethtool_stats(struct net_device *dev,
 				     u64 *data)
 {
 	struct bcmasp_intf *priv = netdev_priv(dev);
-	int i;
+	int i, j = 0;
 
 	if (netif_running(dev))
 		bcmasp_update_mib_counters(priv);
@@ -287,6 +322,8 @@ static void bcmasp_get_ethtool_stats(struct net_device *dev,
 		char *p;
 
 		s = &bcmasp_gstrings_stats[i];
+		if (!bcmasp_stat_available(priv, s->type))
+			continue;
 		if (s->type == BCMASP_STAT_NETDEV)
 			p = (char *)&dev->stats;
 		else
@@ -294,9 +331,10 @@ static void bcmasp_get_ethtool_stats(struct net_device *dev,
 		p += s->stat_offset;
 		if (sizeof(unsigned long) != sizeof(u32) &&
 		    s->stat_sizeof == sizeof(unsigned long))
-			data[i] = *(unsigned long *)p;
+			data[j] = *(unsigned long *)p;
 		else
-			data[i] = *(u32 *)p;
+			data[j] = *(u32 *)p;
+		j++;
 	}
 }
 
@@ -362,7 +400,10 @@ static void bcmasp_get_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 {
 	struct bcmasp_intf *intf = netdev_priv(dev);
 
-	wol->supported = WAKE_MAGIC | WAKE_MAGICSECURE | WAKE_FILTER;
+	if (bcmasp_intf_has_umac(intf))
+		wol->supported = WAKE_MAGIC | WAKE_MAGICSECURE | WAKE_FILTER;
+	else
+		wol->supported = 0;
 	wol->wolopts = intf->wolopts;
 	memset(wol->sopass, 0, sizeof(wol->sopass));
 
@@ -375,7 +416,7 @@ static int bcmasp_set_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 	struct bcmasp_intf *intf = netdev_priv(dev);
 	struct device *kdev = &intf->parent->pdev->dev;
 
-	if (!device_can_wakeup(kdev))
+	if (!device_can_wakeup(kdev) || !bcmasp_intf_has_umac(intf))
 		return -EOPNOTSUPP;
 
 	if (wol->wolopts & ~(WAKE_MAGIC | WAKE_MAGICSECURE | WAKE_FILTER))

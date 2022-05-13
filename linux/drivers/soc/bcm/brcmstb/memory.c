@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021 Broadcom
+ * Copyright © 2022 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -20,9 +20,9 @@
 #include <linux/io.h>
 #include <linux/kasan.h>
 #include <linux/libfdt.h>
-#include <linux/list.h>
 #include <linux/memblock.h>
-#include <linux/mm.h>   /* for high_memory */
+#include <linux/module.h>
+#include <linux/mm.h>
 #include <linux/of_address.h>
 #include <linux/of_fdt.h>
 #include <linux/slab.h>
@@ -36,7 +36,6 @@
 #include <linux/brcmstb/memory_api.h>
 #include <asm/tlbflush.h>
 #include <linux/pfn_t.h>
-#include <linux/pagewalk.h>
 #include <linux/memory_hotplug.h>
 #include <linux/swiotlb.h>
 #include <linux/kmemleak.h>
@@ -90,20 +89,12 @@ enum {
 #define BMEM_LARGE_ENOUGH	(SZ_1G)
 
 /* -------------------- Shared and local vars -------------------- */
-struct kva_map {
-	struct list_head list;
-	phys_addr_t pa;
-	unsigned long va;
-	unsigned long size;
-	pgprot_t prot;
-};
-static LIST_HEAD(kva_map_list);
-static DEFINE_MUTEX(kva_map_lock);
 
 enum brcmstb_reserve_type brcmstb_default_reserve = BRCMSTB_RESERVE_BHPA;
 bool brcmstb_memory_override_defaults = false;
 bool brcmstb_bmem_is_bhpa = false;
 
+static bool brcmstb_populate_reserved_called;
 static struct brcmstb_reserved_memory reserved_init;
 
 #ifdef CONFIG_PAGE_AUTOMAP
@@ -187,6 +178,7 @@ cleanup:
 	return memc;
 }
 
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
 static int __init early_phys_addr_to_memc(phys_addr_t pa)
 {
 	int memc = -1;
@@ -221,6 +213,41 @@ static int __init early_phys_addr_to_memc(phys_addr_t pa)
 
 	return memc;
 }
+
+static const char *__get_mem_layout_early(int *size_cells, int *addr_cells,
+					  int *proplen)
+{
+	const void *fdt = initial_boot_params;
+	int mem_offset;
+	const struct fdt_property *prop;
+
+	if (!fdt) {
+		pr_err("No device tree?\n");
+		return NULL;
+	}
+
+	/* Get root size and address cells if specified */
+	prop = fdt_get_property(fdt, 0, "#size-cells", proplen);
+	if (prop)
+		*size_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
+
+	prop = fdt_get_property(fdt, 0, "#address-cells", proplen);
+	if (prop)
+		*addr_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
+
+	mem_offset = fdt_path_offset(fdt, "/memory");
+	if (mem_offset < 0) {
+		pr_err("No memory node?\n");
+		return NULL;
+	}
+
+	prop = fdt_get_property(fdt, mem_offset, "reg", proplen);
+	if (!prop)
+		return NULL;
+
+	return prop->data;
+}
+#endif /* CONFIG_BRCMSTB_MEMORY_API */
 #elif defined(CONFIG_MIPS)
 #define early_phys_addr_to_memc brcmstb_memory_phys_addr_to_memc
 int brcmstb_memory_phys_addr_to_memc(phys_addr_t pa)
@@ -239,41 +266,61 @@ int brcmstb_memory_phys_addr_to_memc(phys_addr_t pa)
 #endif
 EXPORT_SYMBOL(brcmstb_memory_phys_addr_to_memc);
 
+
+static const char *__get_mem_layout(int *size_cells, int *addr_cells,
+				    int *proplen)
+{
+	struct device_node *dn;
+	const char *value;
+
+	dn = of_find_node_by_path("/");
+	if (!dn)
+		return NULL;
+
+	*size_cells = of_n_size_cells(dn);
+	*addr_cells = of_n_addr_cells(dn);
+	of_node_put(dn);
+
+	dn = of_find_node_by_path("/memory");
+	if (!dn) {
+		pr_err("No memory node?\n");
+		return NULL;
+	}
+
+	value = of_get_property(dn, "reg", proplen);
+	of_node_put(dn);
+	return value;
+}
+
+static const char *get_mem_layout(int *size_cells, int *addr_cells,
+				  int *proplen, bool early)
+{
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
+	if (early)
+		return __get_mem_layout_early(size_cells, addr_cells, proplen);
+	else
+#endif
+		return __get_mem_layout(size_cells, addr_cells, proplen);
+}
+
 static int __ref __for_each_memc_range(int (*fn)(int m, u64 a, u64 s, void *c),
 				       void *c, bool early)
 {
-	const void *fdt = initial_boot_params;
-	int addr_cells = 1, size_cells = 1;
-	int proplen, cellslen, mem_offset;
-	const struct fdt_property *prop;
+	int addr_cells, size_cells;
+	const char *prop_data;
+	int cellslen, proplen;
 	int i, ret;
 
 	if (!fn)
 		return -EINVAL;
 
-	if (!fdt) {
-		pr_err("No device tree?\n");
+	prop_data = get_mem_layout(&size_cells, &addr_cells, &proplen,
+				   early);
+	if (!prop_data)
 		return -EINVAL;
-	}
 
-	/* Get root size and address cells if specified */
-	prop = fdt_get_property(fdt, 0, "#size-cells", &proplen);
-	if (prop)
-		size_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
-
-	prop = fdt_get_property(fdt, 0, "#address-cells", &proplen);
-	if (prop)
-		addr_cells = DT_PROP_DATA_TO_U32(prop->data, 0);
-
-	mem_offset = fdt_path_offset(fdt, "/memory");
-	if (mem_offset < 0) {
-		pr_err("No memory node?\n");
-		return -EINVAL;
-	}
-
-	prop = fdt_get_property(fdt, mem_offset, "reg", &proplen);
 	cellslen = (int)sizeof(u32) * (addr_cells + size_cells);
-	if ((proplen % cellslen) != 0) {
+	if (!prop_data || (proplen % cellslen) != 0) {
 		pr_err("Invalid length of reg prop: %d\n", proplen);
 		return -EINVAL;
 	}
@@ -286,19 +333,21 @@ static int __ref __for_each_memc_range(int (*fn)(int m, u64 a, u64 s, void *c),
 
 		for (j = 0; j < addr_cells; ++j) {
 			int offset = (cellslen * i) + (sizeof(u32) * j);
-			addr |= (u64)DT_PROP_DATA_TO_U32(prop->data, offset) <<
+			addr |= (u64)DT_PROP_DATA_TO_U32(prop_data, offset) <<
 				((addr_cells - j - 1) * 32);
 		}
 		for (j = 0; j < size_cells; ++j) {
 			int offset = (cellslen * i) +
 				(sizeof(u32) * (j + addr_cells));
-			size |= (u64)DT_PROP_DATA_TO_U32(prop->data, offset) <<
+			size |= (u64)DT_PROP_DATA_TO_U32(prop_data, offset) <<
 				((size_cells - j - 1) * 32);
 		}
 
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
 		if (early)
 			memc = early_phys_addr_to_memc((phys_addr_t)addr);
 		else
+#endif
 			memc = brcmstb_memory_phys_addr_to_memc((phys_addr_t)addr);
 
 		ret = fn(memc, addr, size, c);
@@ -623,6 +672,7 @@ static int reserved_mem_cmp_func(const void *a, const void *b)
 	return ra->base < rb->base ? -1 : 1;
 }
 
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
 static int brcmstb_populate_reserved(void)
 {
 	int offset, lenp, ret, count, cellslen;
@@ -712,6 +762,68 @@ out:
 
 	return 0;
 }
+#endif /* IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API) */
+
+static int populate_reserved_late(struct brcmstb_reserved_memory *reserved)
+{
+	struct device_node *rn, *dn;
+	int lenp, count, ret;
+	unsigned int i = 0;
+	struct resource r;
+	const char *name;
+
+	rn = of_find_node_by_path("/reserved-memory");
+	if (!rn)
+		return 0;
+
+	for_each_child_of_node(rn, dn) {
+		if (of_device_is_compatible(dn, "brcm,bhpa") ||
+		    of_device_is_compatible(dn, "designated-movable-block"))
+			continue;
+
+		name = of_get_property(dn, "reserved-names", &lenp);
+		if (name && lenp >= 0)
+			count = lenp;
+		else
+			count = 0;
+
+		ret = of_address_to_resource(dn, 0, &r);
+		if (ret)
+			continue;
+
+		/* Add name, address and size to the reserved memory list */
+		brcmstb_reserved_mem_entries[i].base = r.start;
+		brcmstb_reserved_mem_entries[i].size = resource_size(&r);
+		if (count)
+			strncpy(brcmstb_reserved_mem_entries[i].reserved_name,
+				name, min(MAX_BRCMSTB_RESERVED_NAME, count));
+		i++;
+		if (i >= MAX_BRCMSTB_RANGE)
+			break;
+	}
+
+	of_node_put(rn);
+
+	brcmstb_reserved_mem_count = i;
+	reserved->count = i;
+
+	sort(brcmstb_reserved_mem_entries, brcmstb_reserved_mem_count,
+	     sizeof(struct reserved_mem), reserved_mem_cmp_func, NULL);
+
+	for (i = 0; i < brcmstb_reserved_mem_count; i++) {
+		reserved->range[i].addr = brcmstb_reserved_mem_entries[i].base;
+		reserved->range[i].size = brcmstb_reserved_mem_entries[i].size;
+		if (!brcmstb_reserved_mem_entries[i].reserved_name[0])
+			continue;
+
+		count = strlen(brcmstb_reserved_mem_entries[i].reserved_name);
+		strncpy(reserved->range_name[i].name,
+			brcmstb_reserved_mem_entries[i].reserved_name,
+			min(count, MAX_BRCMSTB_RESERVED_NAME));
+	}
+
+	return 0;
+}
 
 static int populate_reserved(struct brcmstb_memory *mem)
 {
@@ -720,6 +832,14 @@ static int populate_reserved(struct brcmstb_memory *mem)
 	struct reserved_mem *rmem;
 	int count, i, j;
 	bool added;
+
+	/* Only call populate_reserved_late if the early population was
+	 * not done
+	 */
+	if (!brcmstb_populate_reserved_called) {
+		populate_reserved_late(&mem->reserved);
+		return 0;
+	}
 
 	memset(&reserved, 0, sizeof(reserved));
 
@@ -826,6 +946,7 @@ static int populate_bhpa(struct brcmstb_memory *mem)
 #endif
 }
 
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
 #if IS_ENABLED(CONFIG_BRCMSTB_HUGEPAGES)
 #if pageblock_order > BHPA_ORDER
 #define BHPA_ALIGN	(1 << (pageblock_order + PAGE_SHIFT))
@@ -1583,6 +1704,7 @@ void __init brcmstb_memory_reserve(void)
 	}
 
 	brcmstb_populate_reserved();
+	brcmstb_populate_reserved_called = true;
 }
 
 /*
@@ -1626,6 +1748,7 @@ void __init brcmstb_memory_init(void)
 	set_online_page_callback(brcm_online_callback);
 #endif
 }
+#endif /* CONFIG_BRCMSTB_MEMORY_API */
 
 /*
  * brcmstb_memory_get() - fill in brcmstb_memory structure
@@ -1846,163 +1969,6 @@ void untrack_pfn_moved(struct vm_area_struct *vma, unsigned long pfn,
 }
 #endif /* CONFIG_PAGE_AUTOMAP */
 
-static int pte_callback(pte_t *pte, unsigned long x, unsigned long y,
-			struct mm_walk *walk)
-{
-	const pgprot_t pte_prot = __pgprot(pte_val(*pte));
-	const pgprot_t req_prot = *((pgprot_t *)walk->private);
-	const pgprot_t prot_msk = __pgprot(BCM_MEM_MASK);
-	return (((pgprot_val(pte_prot) ^ pgprot_val(req_prot)) & pgprot_val(prot_msk)) == 0) ? 0 : -1;
-}
-
-static const struct mm_walk_ops page_to_virt_contig_ops = {
-	.pte_entry = pte_callback,
-};
-
-static void *page_to_virt_contig(const struct page *page, unsigned int pg_cnt,
-					pgprot_t pgprot)
-{
-	int rc;
-	struct mm_walk walk;
-	unsigned long pfn;
-	unsigned long pfn_start;
-	unsigned long pfn_end;
-	unsigned long va_start;
-	unsigned long va_end;
-
-	if ((page == NULL) || !pg_cnt)
-		return ERR_PTR(-EINVAL);
-
-	pfn_start = page_to_pfn(page);
-	pfn_end = pfn_start + pg_cnt;
-	for (pfn = pfn_start; pfn < pfn_end; pfn++) {
-		struct page *cur_pg = pfn_to_page(pfn);
-		phys_addr_t pa;
-
-		/* Verify range is in mapped low memory only */
-		if (PageHighMem(cur_pg)
-#ifdef CONFIG_PAGE_AUTOMAP
-		    || PageAutoMap(cur_pg)
-#endif
-		    )
-			return NULL;
-
-		/* Must be mapped */
-		pa = page_to_phys(cur_pg);
-		if (page_address(cur_pg) == NULL)
-			return NULL;
-	}
-
-	/*
-	 * Aliased mappings with different cacheability attributes on ARM can
-	 * lead to trouble!
-	 */
-	memset(&walk, 0, sizeof(walk));
-	walk.ops = &page_to_virt_contig_ops;
-	walk.private = (void *)&pgprot;
-	walk.mm = current->mm;
-	va_start = (unsigned long)page_address(page);
-	va_end = (unsigned long)(page_address(page) + (pg_cnt << PAGE_SHIFT));
-	rc = walk_page_range(walk.mm, va_start,
-			     va_end,
-			     walk.ops, walk.private);
-	if (rc)
-		pr_debug("cacheability mismatch\n");
-
-	return rc ? NULL : page_address(page);
-}
-
-/*
- * Create a new vm area for the mapping of a contiguous physical range
- */
-static void *brcmstb_memory_remap(unsigned long pfn, unsigned int count,
-		unsigned long flags, pgprot_t prot)
-{
-	struct vm_struct *area;
-	struct kva_map *kva, *tmp;
-	phys_addr_t pend;
-
-	might_sleep();
-
-	kva = kmalloc(sizeof(*kva), GFP_KERNEL);
-	if (!kva)
-		return NULL;
-
-	kva->pa = __pfn_to_phys(pfn);
-	kva->size = (count << PAGE_SHIFT);
-	kva->prot = prot;
-
-	area = get_vm_area_caller(kva->size, flags,
-				  __builtin_return_address(0));
-	if (!area) {
-		kfree(kva);
-		return NULL;
-	}
-
-	kva->va = (unsigned long)area->addr;
-	pend = kva->pa + kva->size;
-
-	/* Look for conflicting maps */
-	mutex_lock(&kva_map_lock);
-	list_for_each_entry(tmp, &kva_map_list, list) {
-		if (tmp->pa >= pend || tmp->pa + tmp->size <= kva->pa)
-			continue;
-
-		if (pgprot_val(tmp->prot) != pgprot_val(kva->prot)) {
-			mutex_unlock(&kva_map_lock);
-			goto error;
-		}
-	}
-	list_add(&kva->list, &kva_map_list);
-	mutex_unlock(&kva_map_lock);
-
-	if (!ioremap_page_range(kva->va, kva->va + kva->size, kva->pa, prot)) {
-		area->phys_addr = kva->pa;
-		return area->addr;
-	}
-
-	mutex_lock(&kva_map_lock);
-	list_del(&kva->list);
-	mutex_unlock(&kva_map_lock);
-error:
-	vunmap(area->addr);
-	vm_unmap_aliases();
-	kfree(kva);
-	return NULL;
-}
-
-/**
- * brcmstb_memory_kva_map() - Map page(s) to a kernel virtual address
- *
- * @page: A struct page * that points to the beginning of a chunk of physical
- * contiguous memory.
- * @num_pages: Number of pages
- * @pgprot: Page protection bits
- *
- * Return: pointer to mapping, or NULL on failure
- */
-void *brcmstb_memory_kva_map(struct page *page, int num_pages, pgprot_t pgprot)
-{
-	void *va;
-
-	/* get the virtual address for this range if it exists */
-	va = page_to_virt_contig(page, num_pages, pgprot);
-	if (IS_ERR(va)) {
-		pr_debug("page_to_virt_contig() failed (%ld)\n", PTR_ERR(va));
-		return NULL;
-	} else if (va == NULL || is_vmalloc_addr(va)) {
-		va = brcmstb_memory_remap(page_to_pfn(page), num_pages, 0,
-					  pgprot);
-		if (va == NULL) {
-			pr_err("vmap failed (num_pgs=%d)\n", num_pages);
-			return NULL;
-		}
-	}
-
-	return va;
-}
-EXPORT_SYMBOL(brcmstb_memory_kva_map);
-
 /**
  * brcmstb_memory_kva_map_phys() - map phys range to kernel virtual address
  *
@@ -2014,79 +1980,59 @@ EXPORT_SYMBOL(brcmstb_memory_kva_map);
  */
 void *brcmstb_memory_kva_map_phys(phys_addr_t phys, size_t size, bool cached)
 {
-	void *addr = NULL;
-	unsigned long offset = phys & ~PAGE_MASK;
-	unsigned long pfn = __phys_to_pfn(phys);
-	unsigned int pg_cnt = (offset + size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	void *addr;
 
-	if (size == 0)
-		return NULL;
-
-	if (pfn_valid(pfn)) {
-		if (!cached) {
-			/*
-			 * This could be supported for MIPS by using ioremap instead,
-			 * but that cannot be done on ARM if you want O_DIRECT support
-			 * because having multiple mappings to the same memory with
-			 * different cacheability will result in undefined behavior.
-			 */
-			return NULL;
-		}
-
-		addr = brcmstb_memory_kva_map(pfn_to_page(pfn),
-				pg_cnt, PAGE_KERNEL);
-	} else {
-		addr = brcmstb_memory_remap(pfn, pg_cnt, 0,
-			cached ? PAGE_KERNEL : pgprot_noncached(PAGE_KERNEL));
-	}
-
-	if (addr)
-		addr += offset;
+	addr = memremap(phys, size, cached ? MEMREMAP_WB : MEMREMAP_WC);
+	if (!addr)
+		vm_unmap_aliases();
 
 	return addr;
 }
 EXPORT_SYMBOL(brcmstb_memory_kva_map_phys);
 
 /**
+ * brcmstb_memory_kva_map() - Map page(s) to a kernel virtual address
+ *
+ * @page: A struct page * that points to the beginning of a chunk of physical
+ * contiguous memory.
+ * @num_pages: Number of pages
+ * @pgprot: Page protection bits
+ *
+ * Return: pointer to mapping, or NULL on failure
+ */
+void *brcmstb_memory_kva_map(struct page *page, int num_pges, pgprot_t pgprot)
+{
+	/* Only supports PAGE_KERNEL protection */
+	if (pgprot_val(pgprot) != pgprot_val(PAGE_KERNEL) || page == NULL)
+		return NULL;
+
+	return brcmstb_memory_kva_map_phys(__pfn_to_phys(page_to_pfn(page)),
+					   (size_t)(num_pges * PAGE_SIZE),
+					   true);
+}
+EXPORT_SYMBOL(brcmstb_memory_kva_map);
+
+/**
  * brcmstb_memory_kva_unmap() - Unmap a kernel virtual address associated
  * to physical pages mapped by brcmstb_memory_kva_map()
  *
- * @kva: Kernel virtual address previously mapped by brcmstb_memory_kva_map()
+ * @kva: Kernel virtual address previously mapped by brcmstb_memory_kva_map*
  *
  * Return: 0 on success, negative on failure.
  */
 int brcmstb_memory_kva_unmap(const void *kva)
 {
-	struct kva_map *map, *next, *found = NULL;
-	unsigned long addr = (unsigned long)kva;
+	bool vm = is_vmalloc_addr(kva);
 
-	if (kva == NULL)
-		return -EINVAL;
-
-	if (!is_vmalloc_addr(kva)) {
-		/* unmapping not necessary for low memory VAs */
-		return 0;
-	}
-
-	mutex_lock(&kva_map_lock);
-	list_for_each_entry_safe(map, next, &kva_map_list, list)
-		if (addr >= map->va && addr <= map->va + map->size) {
-			found = map;
-			list_del(&found->list);
-			break;
-		}
-	mutex_unlock(&kva_map_lock);
-	if (!found)
-		return -EFAULT;
-
-	vunmap((void *)found->va);
-	vm_unmap_aliases();
-	kfree(found);
+	memunmap((void *)kva);
+	if (vm)
+		vm_unmap_aliases();
 
 	return 0;
 }
 EXPORT_SYMBOL(brcmstb_memory_kva_unmap);
 
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
 void *brcmstb_ioremap(phys_addr_t phys_addr, size_t size)
 {
 	unsigned long last_addr;
@@ -2126,16 +2072,17 @@ void *brcmstb_ioremap(phys_addr_t phys_addr, size_t size)
 	return (void __iomem *)(offset + addr);
 }
 EXPORT_SYMBOL(brcmstb_ioremap);
-
-void brcmstb_iounmap(volatile void __iomem *io_addr)
+#else
+static int __init brcmstb_memory_module_init(void)
 {
-	unsigned long addr = (unsigned long)io_addr & PAGE_MASK;
-
-	/*
-	 * We could get an address outside vmalloc range in case
-	 * of ioremap_cache() reusing a RAM mapping.
-	 */
-	if (is_vmalloc_addr((void *)addr))
-		vunmap((void *)addr);
+#ifdef CONFIG_MEMORY_HOTPLUG
+	set_online_page_callback(brcm_online_callback);
+#endif
+	return 0;
 }
-EXPORT_SYMBOL(brcmstb_iounmap);
+module_init(brcmstb_memory_module_init);
+#endif /* IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API) */
+
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom STB memory services");
+MODULE_LICENSE("GPL v2");

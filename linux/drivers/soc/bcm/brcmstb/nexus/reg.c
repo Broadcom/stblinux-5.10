@@ -19,6 +19,7 @@
 
 #include <linux/kernel.h>
 #include <linux/export.h>
+#include <linux/module.h>
 #include <linux/brcmstb/brcmstb.h>
 #include <linux/brcmstb/reg_api.h>
 
@@ -29,3 +30,7 @@ int brcmstb_update32(uint32_t addr, uint32_t mask, uint32_t value)
 	return brcmstb_gpio_update32(addr, mask, value);
 }
 EXPORT_SYMBOL(brcmstb_update32);
+
+MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom STB Nexus register APIs");

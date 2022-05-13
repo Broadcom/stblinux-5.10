@@ -43,7 +43,7 @@ do {						\
 
 enum brcm_protocol_cmd {
 	BRCM_SEND_AVS_CMD = 0x3,
-	BRCM_CLK_SHOW_CMD = 0x4,
+	BRCM_CLK_SHOW_CMD = 0x4, /* obsoleted */
 	BRCM_PMAP_SHOW_CMD = 0x5,
 	BRCM_CLK_SHOW_NEW_CMD = 0x6,
 	BRCM_RESET_ENABLE_CMD = 0x7,
@@ -52,6 +52,7 @@ enum brcm_protocol_cmd {
 	BRCM_SCMI_STATS_SHOW_CMD = 0xa,
 	BRCM_SCMI_STATS_RESET_CMD = 0xb,
 	BRCM_TRACE_LOG_ON_CMD = 0xc,
+	BRCM_GET_CLK_VER_STR = 0xd,
 };
 
 static const char __maybe_unused *pmap_cores[BCLK_SW_NUM_CORES] = {
@@ -81,12 +82,12 @@ static const char __maybe_unused *pmap_cores[BCLK_SW_NUM_CORES] = {
 	[BCLK_SW_CPU1 - BCLK_SW_OFFSET] = "cpu1",
 	[BCLK_SW_CPU2 - BCLK_SW_OFFSET] = "cpu2",
 	[BCLK_SW_CPU3 - BCLK_SW_OFFSET] = "cpu3",
+	[BCLK_SW_DVPHT_CORE - BCLK_SW_OFFSET] = "dvpht_core",
 };
 
 static struct scmi_protocol_handle *handle, *perf_handle;
 static const struct scmi_perf_proto_ops *perf_ops;
 static struct platform_device *cpufreq_dev;
-static DEFINE_MUTEX(clk_api_mutex);
 
 static bool is_cpu_domain(unsigned int domain)
 {
@@ -100,16 +101,6 @@ static bool is_cpu_domain(unsigned int domain)
 		break;
 	}
 	return false;
-}
-
-static void clk_api_lock(void)
-{
-	mutex_lock(&clk_api_mutex);
-}
-
-static void clk_api_unlock(void)
-{
-	mutex_unlock(&clk_api_mutex);
 }
 
 static int avs_ret_to_linux_ret(int avs_ret)
@@ -203,11 +194,9 @@ static int brcm_send_avs_cmd_via_scmi(const struct scmi_protocol_handle *handle,
 {
 	int ret;
 
-	clk_api_lock();
 	ret = brcm_send_cmd_via_scmi(handle, BRCM_SEND_AVS_CMD, sub_cmd,
 				     SCMI_PROTOCOL_BRCM, num_in, num_out,
 				     params);
-	clk_api_unlock();
 
 	return ret;
 }
@@ -285,12 +274,6 @@ static const struct scmi_protocol scmi_brcm_protocol = {
 	.instance_init = scmi_brcm_protocol_init,
 };
 
-static int __init scmi_brcm_init(void)
-{
-	return scmi_protocol_register(&scmi_brcm_protocol);
-}
-subsys_initcall(scmi_brcm_init);
-
 static int brcmstb_send_avs_cmd(unsigned int cmd, unsigned int in,
 			    unsigned int out, u32 args[AVS_MAX_PARAMS])
 {
@@ -310,9 +293,7 @@ int brcm_pmap_show(void)
 {
 	int ret;
 
-	clk_api_lock();
 	ret = brcm_send_show_cmd_via_scmi(NULL, handle, BRCM_PMAP_SHOW_CMD);
-	clk_api_unlock();
 
 	return ret;
 }
@@ -329,9 +310,7 @@ int brcm_pmap_num_pstates(unsigned int core_id, unsigned int *num_pstates)
 	if (domain >= BCLK_SW_NUM_CORES)
 		return -EINVAL;
 
-	clk_api_lock();
 	ret = perf_ops->num_domain_opps_get(perf_handle, domain, num_pstates);
-	clk_api_unlock();
 
 	if (!ret && (*num_pstates == 0 || *num_pstates > MAX_PSTATES))
 		ret = -EIO;
@@ -358,9 +337,7 @@ static int get_all_pmap_freq_info(int core_id, unsigned int *num_pstates,
 	if (ret < 0)
 		return ret;
 
-	clk_api_lock();
 	ret = perf_ops->level_get(perf_handle, domain, cur_pstate, false);
-	clk_api_unlock();
 	if (ret < 0)
 		return ret;
 
@@ -434,9 +411,7 @@ int brcm_pmap_set_pstate(unsigned int core_id, unsigned int pstate)
 		pstate = freqs[pstate];
 	}
 
-	clk_api_lock();
 	ret = perf_ops->level_set(perf_handle, domain, pstate, false);
-	clk_api_unlock();
 
 	return ret;
 }
@@ -458,14 +433,11 @@ int brcm_pmap_get_pstate_freqs(unsigned int core_id, u32 *freqs)
 	if (ret)
 		return -EINVAL;
 
-	clk_api_lock();
 	ret = perf_ops->domain_freqs_get(perf_handle, domain, freqs);
 	/* sort frequencies in descending order */
 	if (ret == 0)
 		for (i = 0; i < freq_cnt/2; i++)
 			swap(freqs[i], freqs[freq_cnt - i - 1]);
-
-	clk_api_unlock();
 
 	return ret;
 }
@@ -479,13 +451,10 @@ int brcm_reset_assert(unsigned int reset_id)
 	if (params >= BRST_SW_NUM_CORES)
 		return -EINVAL;
 
-	clk_api_lock();
 	ret = brcm_send_cmd_via_scmi(handle, BRCM_RESET_ENABLE_CMD, 0,
 				       SCMI_PROTOCOL_BRCM,
 				       1, 0,
 				       &params);
-	clk_api_unlock();
-
 	return ret;
 }
 EXPORT_SYMBOL(brcm_reset_assert);
@@ -498,13 +467,10 @@ int brcm_reset_deassert(unsigned int reset_id)
 	if (params >= BRST_SW_NUM_CORES)
 		return -EINVAL;
 
-	clk_api_lock();
 	ret = brcm_send_cmd_via_scmi(handle, BRCM_RESET_DISABLE_CMD, 0,
 				       SCMI_PROTOCOL_BRCM,
 				       1, 0,
 				       &params);
-	clk_api_unlock();
-
 	return ret;
 }
 EXPORT_SYMBOL(brcm_reset_deassert);
@@ -515,13 +481,10 @@ int brcm_overtemp_reset(unsigned int reset_temp)
 	int ret;
 	u32 params = reset_temp;
 
-	clk_api_lock();
 	ret = brcm_send_cmd_via_scmi(handle, BRCM_OVERTEMP_RESET_CMD, 0,
 				     SCMI_PROTOCOL_BRCM,
 				     1, 0,
 				     &params);
-	clk_api_unlock();
-
 	return ret;
 }
 EXPORT_SYMBOL(brcm_overtemp_reset);
@@ -540,13 +503,34 @@ struct trace_log_dfs_info {
 static struct dentry *rootdir;
 static struct trace_log_dfs_info tldfs;
 
+
+static int brcm_scmi_get_clk_ver_str(char *str, unsigned int buf_len)
+{
+#define MAX_CLK_VER_CHARS 64
+	u32 params[(MAX_CLK_VER_CHARS + 3) / 4];
+	const int nparams = ARRAY_SIZE(params);
+	const size_t max_len = buf_len < sizeof(params) ? buf_len : sizeof(params);
+	int ret;
+
+	if (!str)
+		return -EINVAL;
+	*str = 0;
+
+	ret = brcm_send_cmd_via_scmi(handle, BRCM_GET_CLK_VER_STR, 0,
+				     SCMI_PROTOCOL_BRCM, 0, nparams, params);
+
+	if (ret == 0)
+		strncpy(str, (const char *)params, max_len - 1);
+	str[max_len - 1] = 0;
+
+	return ret;
+}
+
 static int brcm_scmi_stats_show(struct seq_file *s, void *data)
 {
 	int ret;
 
-	clk_api_lock();
 	ret = brcm_send_show_cmd_via_scmi(s, handle, BRCM_SCMI_STATS_SHOW_CMD);
-	clk_api_unlock();
 
 	return ret;
 }
@@ -558,8 +542,6 @@ static int brcm_scmi_stats_reset(void)
 
 	ret = brcm_send_cmd_via_scmi(handle, BRCM_SCMI_STATS_RESET_CMD,
 				     0, SCMI_PROTOCOL_BRCM, 0, 0, &param);
-	clk_api_unlock();
-
 	return ret;
 }
 
@@ -567,9 +549,7 @@ static int brcm_scmi_clk_summary_show(struct seq_file *s, void *data)
 {
 	int ret;
 
-	clk_api_lock();
 	ret = brcm_send_show_cmd_via_scmi(s, handle, BRCM_CLK_SHOW_NEW_CMD);
-	clk_api_unlock();
 
 	return ret;
 }
@@ -578,9 +558,7 @@ static int brcm_scmi_pmap_show(struct seq_file *s, void *data)
 {
 	int ret;
 
-	clk_api_lock();
 	ret = brcm_send_show_cmd_via_scmi(s, handle, BRCM_PMAP_SHOW_CMD);
-	clk_api_unlock();
 
 	return ret;
 }
@@ -805,7 +783,6 @@ static ssize_t brcm_trace_log_on_wt(struct file *filp,
 	int sts = len, ret;
 	unsigned int on;
 
-	clk_api_lock();
 	ret = uint_from_buf(ubuf, len, &on);
 	if (ret < 0) {
 		sts = ret;
@@ -826,7 +803,6 @@ static ssize_t brcm_trace_log_on_wt(struct file *filp,
 	if (ret < 0)
 		sts = ret;
 trace_out:
-	clk_api_unlock();
 	return sts;
 }
 
@@ -1321,6 +1297,31 @@ int brcmstb_avs_get_pmic_reg_status(u8 regulator, u16 *voltage,
 }
 EXPORT_SYMBOL(brcmstb_avs_get_pmic_reg_status);
 
+static void clk_blob_ver_check(struct scmi_device *sdev)
+{
+	struct device_node *dn = sdev->dev.of_node;
+	char ams_clk_ver_str[64];
+	const char *bolt_clk_ver_str = NULL;
+
+	ams_clk_ver_str[0] = 0;
+
+	if (dn
+	    && of_property_read_string(dn, "brcm,clk-ver", &bolt_clk_ver_str) == 0
+	    && brcm_scmi_get_clk_ver_str(ams_clk_ver_str, sizeof(ams_clk_ver_str)) == 0
+	    && ams_clk_ver_str[0]) {
+		if (strcmp(bolt_clk_ver_str, ams_clk_ver_str)) {
+			dev_err(&sdev->dev, "ClkVerTest: FAIL: Clock version string mismatch:\n");
+			dev_err(&sdev->dev, "                : BOLT %s\n", bolt_clk_ver_str);
+			dev_err(&sdev->dev, "                :  AMS %s\n", ams_clk_ver_str);
+		} else {
+			dev_info(&sdev->dev, "ClkVerTest: PASS: %s\n", ams_clk_ver_str);
+		}
+	} else {
+		dev_info(&sdev->dev, "ClkVerTest: PASS: by default; cannot test\n");
+	}
+}
+
+
 static int brcm_scmi_dvfs_probe(struct scmi_device *sdev)
 {
 	struct scmi_handle *h = sdev->handle;
@@ -1335,6 +1336,7 @@ static int brcm_scmi_dvfs_probe(struct scmi_device *sdev)
 	brcm_scmi_debug_init();
 	brcm_trace_log_debug_init();
 #endif
+	clk_blob_ver_check(sdev);
 
 	/* This tells AVS we are using the new API */
 	(void)brcmstb_stb_avs_read_debug(0, &value);
@@ -1377,16 +1379,12 @@ static const struct scmi_device_id brcm_scmi_perf_id_table[] = {
 };
 MODULE_DEVICE_TABLE(brcm_scmi_perf, brcm_scmi_perf_id_table);
 
-static int __init get_brcm_avs_cpufreq_dev(void)
-{
-	struct device_node *np;
-
-	np = of_find_compatible_node(NULL, NULL, "brcm,avs-cpu-data-mem");
-	cpufreq_dev = np ? of_find_device_by_node(np) : NULL;
-	return 0;
-}
-
-late_initcall(get_brcm_avs_cpufreq_dev);
+static struct scmi_driver brcmstb_scmi_dvfs_drv = {
+	.name		= "brcmstb-scmi-dvfs",
+	.probe		= brcm_scmi_dvfs_probe,
+	.remove		= brcm_scmi_dvfs_remove,
+	.id_table	= brcm_scmi_id_table,
+};
 
 static struct scmi_driver brcmstb_scmi_perf_drv = {
 	.name		= "brcmstb-scmi-perf",
@@ -1394,15 +1392,42 @@ static struct scmi_driver brcmstb_scmi_perf_drv = {
 	.remove		= brcm_scmi_perf_remove,
 	.id_table	= brcm_scmi_perf_id_table,
 };
-module_scmi_driver(brcmstb_scmi_perf_drv);
 
-static struct scmi_driver brcmstb_scmi_dvfs_drv = {
-	.name		= "brcmstb-scmi-dvfs",
-	.probe		= brcm_scmi_dvfs_probe,
-	.remove		= brcm_scmi_dvfs_remove,
-	.id_table	= brcm_scmi_id_table,
-};
-module_scmi_driver(brcmstb_scmi_dvfs_drv);
+static int __init brcmstb_scmi_driver_init(void)
+{
+	int ret;
+
+	ret = scmi_protocol_register(&scmi_brcm_protocol);
+	if (ret)
+		return ret;
+
+	ret = scmi_driver_register(&brcmstb_scmi_dvfs_drv, THIS_MODULE,
+				   KBUILD_MODNAME);
+	if (ret)
+		goto out;
+
+	ret = scmi_driver_register(&brcmstb_scmi_perf_drv, THIS_MODULE,
+				   KBUILD_MODNAME);
+	if (ret)
+		goto out_dvfs_drv;
+
+	return ret;
+
+out_dvfs_drv:
+	scmi_driver_unregister(&brcmstb_scmi_dvfs_drv);
+out:
+	scmi_protocol_unregister(&scmi_brcm_protocol);
+	return ret;
+}
+module_init(brcmstb_scmi_driver_init);
+
+static void __exit brcmstb_scmi_driver_exit(void)
+{
+	scmi_driver_unregister(&brcmstb_scmi_perf_drv);
+	scmi_driver_unregister(&brcmstb_scmi_dvfs_drv);
+	scmi_protocol_unregister(&scmi_brcm_protocol);
+}
+module_exit(brcmstb_scmi_driver_exit);
 
 MODULE_AUTHOR("Broadcom");
 MODULE_LICENSE("GPL v2");

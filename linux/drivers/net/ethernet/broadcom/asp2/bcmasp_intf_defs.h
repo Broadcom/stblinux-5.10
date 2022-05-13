@@ -92,6 +92,51 @@
 #define   RGMII_PORT_MODE_EXT_RVMII	4
 #define   RGMII_PORT_MODE_MASK		GENMASK(2, 0)
 
+#define RGMII_SYS_LED_CNTRL		0x74
+#define  RGMII_SYS_LED_CNTRL_LINK_OVRD	BIT(15)
+
+#define OUTDMA_OFFSET(intf)	\
+	(((intf->channel - 6) * 0xb0) + 0x47000)
+#define  OUTDMA_ENABLE			0x00
+#define   OUTDMA_ENABLE_EN		BIT(0)
+#define  OUTDMA_HW_STATUS		0x04
+#define   OUTDMA_HW_STATUS_IDLE		BIT(0)
+#define  OUTDMA_DATA_DMA_WRITE		0x08
+#define  OUTDMA_DATA_DMA_READ		0x10
+#define  OUTDMA_DATA_DMA_BASE		0x18
+#define  OUTDMA_DATA_DMA_END		0x20
+#define  OUTDMA_DATA_DMA_VALID		0x28
+#define  OUTDMA_DATA_CTRL1		0x30
+#define   OUTDMA_DATA_CTRL1_E_BALN_MASK	GENMASK(2, 0)
+#define   OUTDMA_DATA_CTRL1_E_NO_ALN	0x00
+#define   OUTDMA_DATA_CTRL1_E_4_ALN	0x02
+#define   OUTDMA_DATA_CTRL1_E_64_ALN	0x06
+#define   OUTDMA_DATA_CTRL1_E_STUFF	BIT(3)
+#define   OUTDMA_DATA_CTRL1_PSH_TMR_EN	BIT(4)
+#define  OUTDMA_DATA_PUSH_TIMER		0x34
+#define  OUTDMA_DATA_PUSH_EVENT_CTRL	0x38
+#define   OUTDMA_DATA_PUSH_CTRL_PUSH	BIT(0)
+#define  OUTDMA_DATA_PUSH_EVENT_STATUS	0x3c
+#define   OUTDMA_DATA_PUSH_EVT_STATUS	BIT(0)
+#define  OUTDMA_DESC_DMA_WRITE		0x50
+#define  OUTDMA_DESC_DMA_READ		0x58
+#define  OUTDMA_DESC_DMA_BASE		0x60
+#define  OUTDMA_DESC_DMA_END		0x68
+#define  OUTDMA_DESC_DMA_VALID		0x70
+#define  OUTDMA_DESC_DMA_CTRL1		0x78
+#define   OUTDMA_DESC_CTRL1_PSH_TIMR_EN	BIT(0)
+#define  OUTDMA_DESC_PUSH_TIMER		0x7c
+#define  OUTDMA_DESC_PUSH_EVT_CTL	0x80
+#define   OUTDMA_DESC_PUSH_EVT_CTL_PSH	BIT(0)
+#define  OUTDMA_DESC_PSH_EVT_ST		0x84
+#define  OUTDMA_DESC_FIFO_CTRL		0x88
+#define   OUTDMA_DESC_FIFO_CTL_FLUSH	BIT(0)
+#define  OUTDMA_DESC_FIFO_FLUSH_STATUS	0x8c
+#define   OUTDMA_DESC_FIFO_FLH_ST	BIT(0)
+#define  OUTDMA_DESC_DMA_CTRL2		0x94
+#define   OUTMDA_DESC_DMA_CTRL2_WD_EN	BIT(1)
+#define   OUTDMA_DESC_DMA_CTRL2_RX_PORT	8
+
 #define TX_SPB_DMA_OFFSET(intf) \
 	((((intf)->channel) * 0x30) + 0x48180)
 #define  TX_SPB_DMA_READ		0x00
@@ -122,6 +167,7 @@
 #define   TX_EPKT_C_CFG_MISC_EN		BIT(0)
 #define   TX_EPKT_C_CFG_MISC_PT		BIT(1)
 #define   TX_EPKT_C_CFG_MISC_PS_SHIFT	14
+#define   TX_EPKT_C_CFG_MISC_FD_SHIFT	20
 
 #define TX_PAUSE_CTRL_OFFSET(intf) \
 	((((intf)->channel * 0xc) + 0x49a20))
@@ -166,16 +212,23 @@
 #define  RX_SPB_DMA_END			0x10
 #define  RX_SPB_DMA_VALID		0x18
 #define  RX_SPB_DMA_FIFO_CTRL		0x20
+#define   RX_SPB_DMA_FIFO_FLUSH		BIT(0)
 #define  RX_SPB_DMA_FIFO_STATUS		0x24
 
-#define RX_SPB_DPCTRL_OFFSET(intf) \
-	((((intf)->channel) * 0x20) + 0xa3000)
-#define  RX_SPB_DPCTRL_WAKE		0x0
-#define   RX_SPB_DPCTRL_WAKE_WK		BIT(0)
-#define  RX_SPB_DPCTRL_FIFO_CTRL	0x8
-#define  RX_SPB_DPCTRL_FIFO_STATUS	0xc
-#define  RX_SPB_DPCTRL_ENABLE		0x14
-#define   RX_SPB_DPCTRL_ENABLE_EN	BIT(0)
+#define RX_SPB_CTRL_OFFSET(intf) \
+	((((intf)->channel - 6) * 0x68) + 0xa1000)
+#define  RX_SPB_CTRL_ENABLE		0x00
+#define   RX_SPB_CTRL_ENABLE_EN		BIT(0)
+
+#define RX_PAUSE_CTRL_OFFSET_LEGACY(intf) \
+	((((intf)->channel - 6) * 0x4) + 0xa1068)
+#define RX_PAUSE_CTRL_OFFSET(intf) \
+	((((intf)->channel - 6) * 0x4) + 0xa1138)
+#define  RX_PAUSE_MAP_VECTOR		0x00
+
+#define RX_SPB_TOP_CTRL_OFFSET(intf) \
+	((((intf)->channel - 6) * 0x14) + 0xa2000)
+#define  RX_SPB_TOP_BLKOUT		0x00
 
 #define NUM_4K_BUFFERS			32
 #define RING_BUFFER_SIZE		(PAGE_SIZE * NUM_4K_BUFFERS)

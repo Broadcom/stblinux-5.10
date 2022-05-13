@@ -32,13 +32,19 @@
 /* Max per bank, to keep some fairness */
 #define MAX_HASH_SIZE_BANK		SZ_64M
 
+static int brcm_pm_debug_init(void);
 
 /* Must be visible to pm-arm.c */
 struct dma_region exclusions[MAX_EXCLUDE];
+EXPORT_SYMBOL_GPL(exclusions);
 struct dma_region regions[MAX_REGION];
+EXPORT_SYMBOL_GPL(regions);
 int num_regions;
+EXPORT_SYMBOL_GPL(num_regions);
 int num_exclusions;
+EXPORT_SYMBOL_GPL(num_exclusions);
 struct brcmstb_memory bm;
+EXPORT_SYMBOL_GPL(bm);
 
 struct procfs_data {
 	struct dma_region *region;
@@ -270,6 +276,7 @@ int configure_main_hash(struct dma_region *regions, int max,
 
 	return idx;
 }
+EXPORT_SYMBOL(configure_main_hash);
 
 int brcmstb_pm_mem_exclude(phys_addr_t addr, size_t len)
 {
@@ -455,7 +462,8 @@ static int __init proc_pm_init(void)
 			      &brcm_pm_proc_ops, exclusion_data))
 		goto err_out;
 
-	return 0;
+	if (brcm_pm_debug_init() == 0)
+		return 0;
 
 err_out:
 	proc_remove(brcmstb_root); /* cleans up recursively */
@@ -503,7 +511,16 @@ static int brcm_pm_debug_init(void)
 	return 0;
 }
 
+#if IS_BUILTIN(CONFIG_BRCMSTB_PM)
 fs_initcall(brcm_pm_debug_init);
-
+#endif
+#else
+static int brcm_pm_debug_init(void)
+{
+	return 0;
+}
 #endif /* CONFIG_BRCMSTB_PM_DEBUG */
 
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom STB PM common routines");
+MODULE_LICENSE("GPL v2");

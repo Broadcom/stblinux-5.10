@@ -45,12 +45,12 @@
 #include <stdint.h>
 
 #define TRC_MAGIC_WORD		0x54524342  /* trace buffer "TRCB" */
-#define TRC_MINOR_VER		2
+#define TRC_MINOR_VER		3
 #define TRC_MAJOR_VER		0
 #define TRC_EVENT_PARAMS_MAX	20
 
 /* event id source and type conversion macros */
-#define EVID(__src, __typ)	(__src | (__typ << 4))
+#define EVID(__typ, __src)	((__typ << 4) | __src)
 #define EVID_FLAG(__evid)	(1 << (__evid & 0x0f))
 #define EVID_SOURCE(__evid)	(__evid & 0x0f)
 #define EVID_TYPE(__evid)	((__evid & 0xf0) >> 4)
@@ -60,7 +60,8 @@ enum event_type {
 	PSCI,
 	AVS,
 	CPUFREQ,
-	STRING_IO
+	STRING_IO,
+	SMC
 };
 
 enum event_source {
@@ -149,5 +150,5 @@ struct trace_info *get_trace_info(void);
 /* Clock name decode functions */
 int trace_decode_clk_name_init(const char *filename);
 void trace_decode_clk_name_unint(void);
-const char *trace_decode_clk_name(unsigned int clk_id);
+void trace_decode_clk_name(unsigned int clk_id, char* buf, size_t bufsize);
 #endif /* _TRACE_H_ */

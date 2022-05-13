@@ -28,11 +28,20 @@ use LWP::UserAgent;
 use POSIX;
 use Socket;
 
+# Environment variables
+use constant BR_CCACHE => qw(BR_CCACHE);
+use constant BR_DEFCONFIG => qw(BR_DEFCONFIG);
+use constant BR_LINUX_OVERRIDE => qw(BR_LINUX_OVERRIDE);
+use constant BR_MIRROR => qw(BR_MIRROR);
+use constant BR_OVERLAY => qw(BR_OVERLAY);
+
+# Config files
 use constant AUTO_MK => qw(brcmstb.mk);
 use constant LOCAL_MK => qw(local.mk);
 use constant BR_FRAG_FILE => qw(br_fragments.cfg);
 use constant KERNEL_FRAG_FILE => qw(k_fragments.cfg);
 
+use constant BR_DEFAULT_DEFCONFIG => qw(brcmstb);
 use constant BR_MIRROR_PROTOCOL => qw(https://);
 use constant BR_MIRROR_HOST => qw(stbgit.stb.broadcom.net);
 use constant BR_MIRROR_PATH => qw(/mirror/buildroot);
@@ -42,6 +51,7 @@ use constant HTTP_USER_AGENT => q(BRCMSTB/br_config.pl );
 use constant LLVM_MIN_KERNEL => qw(5.4);
 use constant LLVM_WRAPPER => qw(llvm-wrapper.pl);
 use constant MERGED_FRAGMENT => qw(merged_fragment);
+use constant OVERLAY_DIR => qw(board/%s/overlay);
 use constant PRIVATE_CCACHE => qw($(HOME)/.buildroot-ccache);
 use constant SHARED_OSS_DIR => qw(/projects/stbdev/open-source);
 use constant SHARED_CCACHE =>  SHARED_OSS_DIR . qw(/buildroot-ccache);
@@ -61,7 +71,6 @@ use constant STALE_THRESHOLD => 7 * 24 * 60 * 60; 	# days in seconds
 use constant WORLD_PERMS => (S_IRWXG | S_IRWXO);
 
 use constant LLVM_DISABLE_PKGS => qw(
-	BR2_PACKAGE_ELFUTILS
 	BR2_LINUX_KERNEL_TOOL_PERF
 	BR2_PACKAGE_LINUX_TOOLS_PERF
 	BR2_PACKAGE_PERF
@@ -629,7 +638,15 @@ sub get_gcc_dir($)
 	my $llvm_wrapper = "$toolchain/bin/".LLVM_WRAPPER;
 
 	if (-x $llvm_wrapper) {
+		my $ret;
+		# Calling "llvm_wrapper.pl --get-gcc" will fail if the LLVM
+		# toolchain doesn't rely on GCC for the target runtime. We
+		# handle this by returning 'undef'.
 		chomp($toolchain = `$llvm_wrapper --get-gcc`);
+		$ret = ($? >> 8);
+		if ($ret != 0) {
+			return undef;
+		}
 	}
 
 	return $toolchain;
@@ -793,16 +810,23 @@ sub set_target_toolchain($$$)
 		my ($major, $minor, $patch) = ($1, $2, $3);
 		my $llvm_ver_str = "BR2_TOOLCHAIN_EXTERNAL_LLVM_$major";
 
-		$stbgcc = "$gcc_dir/bin/".$compiler_map{$arch};
-		$gcc_version = `$stbgcc -v 2>&1 | grep 'gcc version'`;
-		if ($gcc_version =~ /\s+(\d+)\.(\d+)\.(\d+)/) {
-			($gcc_major, $gcc_minor, $gcc_patch) = ($1, $2, $3);
+		if (defined($gcc_dir)) {
+			$stbgcc = "$gcc_dir/bin/".$compiler_map{$arch};
+			$gcc_version = `$stbgcc -v 2>&1 | grep 'gcc version'`;
+			if ($gcc_version =~ /\s+(\d+)\.(\d+)\.(\d+)/) {
+				($gcc_major, $gcc_minor, $gcc_patch) =
+					($1, $2, $3);
+			} else {
+				return -3;
+			}
 		} else {
-			return -3;
+			print("This LLVM toolchain doesn't rely on GCC...\n");
 		}
 
 		print("Detected LLVM $major.$minor...\n");
-		print("Detected GCC $gcc_major.$gcc_minor...\n");
+		if (defined($gcc_dir)) {
+			print("Detected GCC $gcc_major.$gcc_minor...\n")
+		}
 		print("C library is $libc...\n");
 		if (!kernel_at_least($kernel_version, LLVM_MIN_KERNEL)) {
 			print("WARNING! LLVM is only supported as of kernel ".
@@ -818,7 +842,7 @@ sub set_target_toolchain($$$)
 			$generic_config{$pkg} = '';
 		}
 	} else {
-		print("WARNING! Couldn't determine GCC version number. ".
+		print("WARNING! Couldn't determine compiler version. ".
 			"Build may fail.\n");
 		print("Toolchain: $toolchain\n");
 	}
@@ -951,8 +975,11 @@ sub get_sysroot($$)
 {
 	my ($toolchain, $arch) = @_;
 	my ($compiler_arch, $sys_root);
+	my $gcc_dir = get_gcc_dir($toolchain);
 
-	$toolchain = get_gcc_dir($toolchain);
+	if (defined($gcc_dir)) {
+		$toolchain = $gcc_dir;
+	}
 	$compiler_arch = $arch_config{$arch}->{'arch_name'};
 	# The MIPS compiler may be called "mipsel-*" not just "mips-*".
 	if (defined($arch_config{$arch}->{'BR2_mipsel'})) {
@@ -1089,6 +1116,14 @@ sub parse_cmdline_fragments($$)
 			# Strip quotes around the entire fragment. Make sure the
 			# quote at the end is the same as at the beginning.
 			$frag =~ s/^(["'])(.*)\1$/$2/;
+		}
+		# Quote the string value of the fragment. Boolean and integer
+		# values do not need quotes.
+		if ($frag =~ /^(\w+)=([^"].*)/) {
+			my ($var, $val) = ($1, $2);
+			if ($val ne 'y' && $val =~ /\D/) {
+				$frag = "$var=\"$val\"";
+			}
 		}
 		print(F "$frag\n");
 	}
@@ -1244,16 +1279,16 @@ sub write_config($$$)
 	close(F);
 }
 
-sub print_host_info($$)
+sub print_host_info($$$)
 {
-	my ($orig_cmdline, $local_linux) = @_;
+	my ($orig_cmdline, $local_linux, $opt_l) = @_;
 	my $host_gcc_ver = `gcc -v 2>&1 | grep '^gcc'`;
 	my $host_kernel_ver = `uname -r`;
 	my $host_name = `hostname -f 2>/dev/null`;
 	my $host_os_ver = `lsb_release -d 2>/dev/null`;
 	my $host_perl_ver = `perl -v | grep '^This is'`;
 	my $stb_release = get_stbrelease_string($local_linux);
-	my @br_vars = grep { /^BR_/ } keys(%ENV);
+	my @br_vars = sort(grep { /^BR_/ } keys(%ENV));
 	my $host_addr;
 
 	chomp($host_name);
@@ -1272,6 +1307,9 @@ sub print_host_info($$)
 	print("Host environment:\n") if ($#br_vars >= 0);
 	foreach my $key (@br_vars) {
 		print("\t$key = ".$ENV{$key}."\n");
+		if ($key eq BR_LINUX_OVERRIDE && defined($opt_l)) {
+			print("\t  -> ignored due to \"-l\"\n");
+		}
 	}
 
 	print("Command line is \"@$orig_cmdline\"...\n");
@@ -1333,8 +1371,8 @@ sub get_br_ccache($)
 	my ($opts_X) = @_;
 	my $br_ccache;
 
-	if (defined($ENV{'BR_CCACHE'})) {
-		$br_ccache = $ENV{'BR_CCACHE'};
+	if (defined($ENV{BR_CCACHE})) {
+		$br_ccache = $ENV{BR_CCACHE};
 	}
 	if (defined($opts_X)) {
 		$br_ccache = $opts_X;
@@ -1363,8 +1401,8 @@ sub get_br_mirror($)
 	my $br_mirror;
 
 	# Set custom Buildroot mirror
-	if (defined($ENV{'BR_MIRROR'})) {
-		$br_mirror = $ENV{'BR_MIRROR'};
+	if (defined($ENV{BR_MIRROR})) {
+		$br_mirror = $ENV{BR_MIRROR};
 	}
 
 	# Command line option -M supersedes environment to specify mirror
@@ -1383,6 +1421,53 @@ sub get_br_mirror($)
 	}
 
 	return $br_mirror;
+}
+
+sub get_br_defconfig($)
+{
+	my ($opts_e) = @_;
+	my $br_defconfig;
+
+	# Set custom defconfig
+	if (defined($ENV{BR_DEFCONFIG})) {
+		$br_defconfig = $ENV{BR_DEFCONFIG};
+	}
+
+	# Command line option -e supersedes environment
+	if (defined($opts_e)) {
+		# Option "-e -" reverts to the default.
+		$br_defconfig = $opts_e;
+	}
+
+	if (!defined($br_defconfig) || $br_defconfig eq '-') {
+		$br_defconfig = BR_DEFAULT_DEFCONFIG;
+	}
+
+	return $br_defconfig;
+}
+
+sub get_br_overlay($$)
+{
+	my ($opts_O, $defconfig) = @_;
+	my $br_overlay;
+
+	# Set custom overlay
+	if (defined($ENV{BR_OVERLAY})) {
+		$br_overlay = $ENV{BR_OVERLAY};
+	}
+
+	# Command line option -O supersedes environment
+	if (defined($opts_O)) {
+		# Option "-O -" uses the default. This overrides the environment
+		# variable BR_OVERLAY.
+		$br_overlay = $opts_O;
+	}
+
+	if (!defined($br_overlay) || $br_overlay eq '-') {
+		$br_overlay = sprintf(OVERLAY_DIR, $defconfig);
+	}
+
+	return $br_overlay;
 }
 
 sub run_clean_mode($$)
@@ -1480,6 +1565,7 @@ sub print_usage($)
 		"          -c...........clean (remove output/\$platform)\n".
 		"          -D...........use platform's default kernel config\n".
 		"          -d <fname>...use <fname> as kernel defconfig\n".
+		"          -e <fname>...use <fname> as BR defconfig\n".
 		"          -F <fname>...use <fname> as kernel fragment file\n".
 		"          -f <fname>...use <fname> as BR fragment file\n".
 		"          -H...........obtain Linux GIT SHA only\n".
@@ -1490,6 +1576,7 @@ sub print_usage($)
 		"          -l <url>.....use <url> as the Linux kernel repo\n".
 		"          -M <url>.....use <url> as BR mirror ('-' for none)\n".
 		"          -n...........do not use shared download cache\n".
+		"          -O <path>....use <path> overlay directory\n".
 		"          -o <path>....use <path> as the BR output directory\n".
 		"          -R <str>.....use <str> as kernel fragment(s)\n".
 		"          -r <str>.....use <str> as BR fragments\n".
@@ -1500,8 +1587,10 @@ sub print_usage($)
 		"          -X <path>....use <path> as CCACHE ('-' for none)\n");
 	print(STDERR "\nEnvironment Variables:\n".
 		"          BR_CCACHE............CCACHE directory (like -X)\n".
+		"          BR_DEFCONFIG.........BR defconfig (like -e)\n".
 		"          BR_LINUX_OVERRIDE....Linux directory (like -L)\n".
-		"          BR_MIRROR............BR mirror (like -M)\n");
+		"          BR_MIRROR............BR mirror (like -M)\n".
+		"          BR_OVERLAY...........rootfs overlay (like -O)\n");
 }
 
 ########################################
@@ -1511,7 +1600,6 @@ my $prg = basename($0);
 
 my @orig_cmdline = @ARGV;
 my @linux_ver;
-my $merged_config = 'brcmstb_merged_defconfig';
 my $br_output_default = 'output';
 my $temp_config = 'temp_config';
 my $clean_mode = 0;
@@ -1522,6 +1610,9 @@ my $is_64bit = 0;
 my $disable_ams_tracing = 0;
 my $disable_cma_driver = 0;
 my $relative_outputdir;
+my $merged_config;
+my $br_defconfig;
+my $overlay_dir;
 my $br_outputdir;
 my $br_mirror;
 my $br_ccache;
@@ -1532,11 +1623,12 @@ my $toolchain;
 my $toolchain_ver;
 my $recommended_toolchain;
 my $kernel_header_version;
+my $gcc_dir;
 my $arch;
 my $opt_keys;
 my %opts;
 
-getopts('3:bCcDd:F:f:Hhij:L:l:M:no:R:r:ST:t:v:X:', \%opts);
+getopts('3:bCcDd:e:F:f:Hhij:L:l:M:nO:o:R:r:ST:t:v:X:', \%opts);
 $opt_keys = join('', keys(%opts));
 $arch = $ARGV[0];
 
@@ -1587,9 +1679,10 @@ if (defined($opts{'3'}) && !$is_64bit) {
 		"platforms.\n");
 }
 
-# Set local Linux directory from environment, if configured.
-if (defined($ENV{'BR_LINUX_OVERRIDE'})) {
-	$local_linux = $ENV{'BR_LINUX_OVERRIDE'};
+# Set local Linux directory from environment, if configured. However, we must
+# ignore BR_LINUX_OVERRIDE if "-l <repo-url>" is specified or it'll interfere.
+if (defined($ENV{BR_LINUX_OVERRIDE}) && !defined($opts{'l'})) {
+	$local_linux = $ENV{BR_LINUX_OVERRIDE};
 }
 
 if (defined($opts{'l'}) && $opts{'l'} !~ m%^(git|ssh|https?)://%) {
@@ -1647,7 +1740,7 @@ run_clean_mode($prg, $br_outputdir) if ($clean_mode);
 run_hash_mode($prg, $arch, $br_outputdir) if ($hash_mode);
 
 # This information may help troubleshoot build problems.
-print_host_info(\@orig_cmdline, $local_linux);
+print_host_info(\@orig_cmdline, $local_linux, $opts{'l'});
 
 if (defined($opts{'o'})) {
 	print("Using ".$opts{'o'}." as output directory...\n");
@@ -1722,6 +1815,19 @@ if (check_open_source_dir() && !defined($opts{'n'})) {
 }
 if (!defined($generic_config{'BR2_DL_DIR'})) {
 	check_oss_stale_sources('dl', $br_outputdir);
+}
+
+$br_defconfig = get_br_defconfig($opts{'e'});
+$merged_config = "${br_defconfig}_merged_defconfig";
+print("Using ${br_defconfig}_defconfig...\n");
+# Don't use brcmstb_defconfig by default for the kernel if we aren't using it
+# for Buildroot.
+if ($br_defconfig !~ /^brcmstb/) {
+	# If the user didn't specify a kernel defconfig, use the arch default.
+	if (!defined($opts{'D'}) && !defined($opts{'d'})) {
+		print("Switching to default kernel defconfig for $arch...\n");
+		$opts{'D'} = 1;
+	}
 }
 
 if (defined($opts{'d'})) {
@@ -1901,17 +2007,28 @@ if (defined($opts{'t'})) {
 	$toolchain =~ s|/+$||;
 }
 
-# Only check the GCC portion of the toolchain at this time. We may want an LLVM
-# check later on.
-$recommended_toolchain = check_toolchain(get_gcc_dir($toolchain), $local_linux);
+$gcc_dir = get_gcc_dir($toolchain);
+if (defined($gcc_dir)) {
+	$recommended_toolchain = check_toolchain($gcc_dir, $local_linux);
+} else {
+	$recommended_toolchain = check_toolchain($toolchain, $local_linux);
+}
 if ($recommended_toolchain ne '') {
 	my $t = $toolchain;
+	# Toolchain sleep time
+	my $sleep_time = $ENV{'BR_TC_SLEEP_TIME'};
 
 	$t =~ s|.*/||;
+	# If unset or non-numeric, use the default sleep time.
+	if (!defined($sleep_time) || $sleep_time =~ /[^\d]/) {
+		$sleep_time = SLEEP_TIME;
+	}
 	print(STDERR "WARNING: you are using toolchain $t. Recommended is ".
 		"$recommended_toolchain.\n");
-	print(STDERR "Hit Ctrl-C now or wait ".SLEEP_TIME." seconds...\n");
-	sleep(SLEEP_TIME);
+	if ($sleep_time > 0) {
+		print(STDERR "Hit Ctrl-C now or wait $sleep_time seconds...\n");
+		sleep($sleep_time);
+	}
 }
 $ret = set_target_toolchain($toolchain, $arch, $local_linux);
 if ($ret == 0) {
@@ -1950,13 +2067,20 @@ if (defined($br_mirror)) {
 	print("Not using a Buildroot mirror...\n");
 }
 
+$overlay_dir = get_br_overlay($opts{'O'}, $br_defconfig);
+print("Looking for overlay directory $overlay_dir...\n");
+if (-d $overlay_dir) {
+	print("Found overlay directory $overlay_dir...\n");
+	$generic_config{'BR2_ROOTFS_OVERLAY'} = $overlay_dir;
+}
+
 get_32bit_runtime($arch, $toolchain, $opts{'3'}) if ($is_64bit);
 
 write_config(\%generic_config, $temp_config, 1);
 write_config($arch_config{$arch}, $temp_config, 0);
 write_config($toolchain_config{$arch}, $temp_config, 0);
 
-system("support/kconfig/merge_config.sh -m configs/brcmstb_defconfig ".
+system("support/kconfig/merge_config.sh -m configs/${br_defconfig}_defconfig ".
 	"\"$temp_config\"");
 if (defined($opts{'f'})) {
 	my $fragment_file = merge_br_fragments($prg, $br_outputdir, $opts{'f'});

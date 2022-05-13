@@ -80,13 +80,14 @@ err:
 	return -1;
 }
 
-const char *trace_decode_clk_name(unsigned int clk_id)
+void trace_decode_clk_name(unsigned int clk_id, char *buf, size_t bufsize)
 {
 	if (!clk_info.all_names)
-		return "???";
-	if (clk_id >= clk_info.num_clks)
-		return "illegal";
-	return clk_info.all_names + clk_info.offsets[clk_id];
+		snprintf(buf, bufsize, "clkid=%u", clk_id);
+	else if (clk_id >= clk_info.num_clks)
+		snprintf(buf, bufsize, "illegal");
+	else
+		snprintf(buf, bufsize, "%s", clk_info.all_names + clk_info.offsets[clk_id]);
 }
 
 

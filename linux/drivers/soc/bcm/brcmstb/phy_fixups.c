@@ -57,3 +57,7 @@ static int __init brcmstb_phy_fixups(void)
 	return ret;
 }
 arch_initcall(brcmstb_phy_fixups);
+
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom STB PHY fixups");
+MODULE_LICENSE("GPL");

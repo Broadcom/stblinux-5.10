@@ -16,7 +16,7 @@
  * http://www.broadcom.com/licenses/GPLv2.php or from the Free Software
  * Foundation at https://www.gnu.org/licenses/ .
  */
-
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/export.h>
 #include <linux/gpio.h>
@@ -27,6 +27,7 @@
 #include <linux/gpio/driver.h>
 #include <linux/gpio/consumer.h>
 #include <linux/slab.h>
+#include <linux/module.h>
 
 #include <linux/brcmstb/brcmstb.h>
 #include <linux/brcmstb/gpio_api.h>
@@ -296,7 +297,7 @@ int brcmstb_gpio_update32(uint32_t addr, uint32_t mask, uint32_t value)
 		return -EPERM;
 	}
 
-#ifdef CONFIG_GPIO_BRCMSTB
+#if IS_ENABLED(CONFIG_GPIO_BRCMSTB)
 	reg = gc->reg_dat;
 	if (reg) {
 		spin_lock_irqsave(&gc->bgpio_lock, flags);
@@ -330,6 +331,7 @@ int brcmstb_gpio_update32(uint32_t addr, uint32_t mask, uint32_t value)
 	pr_err("%s: unable to resolve GIO mapped address\n", __func__);
 	return -EPERM;
 }
+EXPORT_SYMBOL(brcmstb_gpio_update32);
 
 int brcmstb_gpio_irq(uint32_t addr, unsigned int shift)
 {
@@ -414,4 +416,8 @@ static int brcmstb_gpio_cache_init(void)
 
 	return 0;
 }
-device_initcall(brcmstb_gpio_cache_init);
+module_init(brcmstb_gpio_cache_init);
+
+MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("Broadcom");
+MODULE_DESCRIPTION("Broadcom STB Nexus GPIO APIs");

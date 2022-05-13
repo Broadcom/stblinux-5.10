@@ -4,13 +4,12 @@
 #
 ################################################################################
 
-DMALLOC_VERSION = 5.5.2
+DMALLOC_VERSION = 5.6.5
 DMALLOC_SOURCE = dmalloc-$(DMALLOC_VERSION).tgz
 DMALLOC_SITE = http://dmalloc.com/releases
 
-DMALLOC_LICENSE = MIT-like
-# license is in each file, dmalloc.h.1 is the smallest one
-DMALLOC_LICENSE_FILES = dmalloc.h.1
+DMALLOC_LICENSE = ISC
+DMALLOC_LICENSE_FILES = LICENSE.txt
 
 DMALLOC_INSTALL_STAGING = YES
 DMALLOC_CFLAGS = $(TARGET_CFLAGS)
@@ -49,6 +48,7 @@ DMALLOC_CONF_ENV = CFLAGS="$(DMALLOC_CFLAGS)"
 
 define DMALLOC_POST_PATCH
 	$(SED) 's/^ac_cv_page_size=0$$/ac_cv_page_size=12/' $(@D)/configure
+	$(SED) 's/ac_cv_strdup_macro=no$$/ac_cv_strdup_macro=yes/' $(@D)/configure
 	$(SED) 's/(ld -/($${LD-ld} -/' $(@D)/configure
 	$(SED) 's/'\''ld -/"$${LD-ld}"'\'' -/' $(@D)/configure
 	$(SED) 's/ar cr/$$(AR) cr/' $(@D)/Makefile.in
@@ -60,16 +60,16 @@ DMALLOC_POST_PATCH_HOOKS += DMALLOC_POST_PATCH
 define DMALLOC_INSTALL_STAGING_CMDS
 	$(TARGET_MAKE_ENV) $(MAKE) includedir="$(STAGING_DIR)/usr/include" \
 		bindir="$(STAGING_DIR)/usr/bin" \
-		libdir="$(STAGING_DIR)/usr/$(BR2_ROOTFS_LIB_DIR)" \
-		shlibdir="$(STAGING_DIR)/usr/$(BR2_ROOTFS_LIB_DIR)" \
+		libdir="$(STAGING_DIR)/usr/$(ROOTFS_LIB_DIR)" \
+		shlibdir="$(STAGING_DIR)/usr/$(ROOTFS_LIB_DIR)" \
 		infodir="$(STAGING_DIR)/usr/share/info/" \
 		-C $(@D) install
 endef
 
 ifeq ($(BR2_STATIC_LIBS),)
 define DMALLOC_INSTALL_SHARED_LIB
-	cp -dpf $(STAGING_DIR)/usr/$(BR2_ROOTFS_LIB_DIR)/libdmalloc*.so \
-		$(TARGET_DIR)/usr/$(BR2_ROOTFS_LIB_DIR)
+	cp -dpf $(STAGING_DIR)/usr/$(ROOTFS_LIB_DIR)/libdmalloc*.so \
+		$(TARGET_DIR)/usr/$(ROOTFS_LIB_DIR)
 endef
 endif
 

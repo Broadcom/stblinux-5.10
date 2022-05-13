@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021 Broadcom
+ * Copyright © 2022 Broadcom
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2, as
@@ -81,7 +81,7 @@ struct brcmstb_memory {
 };
 
 #define BRCMSTB_MEM_SUPPORTS_UNALIGNED_KVA_MAP
-#ifdef CONFIG_BRCMSTB_MEMORY_API
+#if IS_ENABLED(CONFIG_BRCMSTB_MEMORY_API)
 int brcmstb_memory_phys_addr_to_memc(phys_addr_t pa);
 #endif
 void *brcmstb_memory_kva_map(struct page *page, int num_pges, pgprot_t pgprot);
@@ -93,7 +93,7 @@ void __init brcmstb_memory_init(void);
 void __init brcmstb_memory_default_reserve(int (*setup)(phys_addr_t start,
 							phys_addr_t size));
 
-#ifdef CONFIG_BRCMSTB_MEMORY_API
+#if IS_ENABLED(CONFIG_BRCMSTB_MEMORY_API)
 void __init brcmstb_memory_reserve(void);
 int brcmstb_memory_get(struct brcmstb_memory *mem);
 #else
@@ -140,7 +140,11 @@ int __brcmstb_hugepage_alloc(unsigned int memcIndex, uint64_t *pages,
 void brcmstb_hugepage_free(unsigned int memcIndex, const uint64_t *pages,
 			   unsigned int count);
 
+#if IS_BUILTIN(CONFIG_BRCMSTB_MEMORY_API)
 void __iomem *brcmstb_ioremap(phys_addr_t phys_addr, size_t size);
-void brcmstb_iounmap(volatile void __iomem *io_addr);
+#else
+#define brcmstb_ioremap	ioremap
+#endif
+#define brcmstb_iounmap	iounmap
 
 #endif  /* _BRCMSTB_MEMORY_API_H */

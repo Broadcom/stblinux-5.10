@@ -4,6 +4,7 @@ if SOC_BRCMSTB
 config BRCMSTB_BMEM
 	bool "Enable BMEM reserved A/V memory"
 	depends on (ARCH_BRCMSTB || BMIPS_GENERIC) && BRCMSTB_MEMORY_API
+	depends on BRCMSTB_MEMORY_API=y
 	help
 	  The A/V peripherals (managed by the PI/Nexus middleware) require
 	  large, contiguous memory regions to be set aside at boot time.  This
@@ -18,6 +19,7 @@ config BRCMSTB_BMEM
 config BRCMSTB_CMA
 	bool "Broadcom STB CMA"
 	depends on ARCH_BRCMSTB && (ARM || ARM64) && CMA && BRCMSTB_MEMORY_API
+	depends on BRCMSTB_MEMORY_API=y
 	help
 	  This driver provides the ioctls for manipulating with the reserved
 	  areas used by Broadcom middleware, as well as the functions for the
@@ -42,7 +44,7 @@ config BRCMSTB_HUGEPAGES
 	  If you are planning to use Broadcom middleware, choose Y here.
 
 config BRCMSTB_MEMORY_API
-	bool "Enable BRCMSTB memory API"
+	tristate "Enable BRCMSTB memory API"
 	depends on (ARCH_BRCMSTB || BMIPS_GENERIC)
 	select LIBFDT
 	help
@@ -52,7 +54,7 @@ config BRCMSTB_MEMORY_API
 	  If you are planning to use Broadcom middleware, choose Y here.
 
 config BRCMSTB_PM
-	bool "Support suspend/resume for STB platforms"
+	tristate "Support suspend/resume for STB platforms"
 	default y
 	depends on PM
 	depends on ARCH_BRCMSTB || BMIPS_GENERIC
@@ -87,18 +89,18 @@ config BRCMSTB_NEXUS_API
 	   sharing of resources: IRQs, GPIOs, Pinmuxing etc.
 
 config BRCMSTB_NEXUS_SPI_API
-	bool
+	tristate "Support for SPI shim"
 	depends on SPI_MASTER
 	select OF_DYNAMIC
 	default SPI_BRCMSTB_MSPI || SPI_BCM2835
 
 config BRCMSTB_NEXUS_DVFS_API
-	bool
+	tristate "Support for DVFS APIs"
 	depends on ARM_SCMI_PROTOCOL || ARM_BRCMSTB_AVS_CPUFREQ
 	default ARM_SCMI_PROTOCOL || ARM_BRCMSTB_AVS_CPUFREQ
 
 config BRCMSTB_NEXUS_CLK_API
-	tristate
+	tristate "Support for CLK APIs"
 	depends on BRCMSTB_NEXUS_API
 	depends on BRCMSTB_NEXUS_API && BRCMSTB_NEXUS_DVFS_API
 	default BRCMSTB_NEXUS_API
@@ -107,7 +109,7 @@ config BRCMSTB_NEXUS_CLK_API
 	   Linux clocks using an integer clock id.
 
 config BRCMSTB_NEXUS_RESET_API
-	tristate
+	tristate "Support for Reset APIs"
 	depends on BRCMSTB_NEXUS_API
 	depends on BRCMSTB_NEXUS_API && BRCMSTB_NEXUS_DVFS_API
 	default BRCMSTB_NEXUS_API
@@ -123,7 +125,7 @@ config BRCMSTB_BBSI
 	  Provides APIs for accessing BBSI devices over SPI.
 
 config BRCMSTB_PHY_FIXUPS
-	tristate
+	tristate "Support for PHY fixups"
 	default y
 	depends on PHYLIB
 	select BCM_NET_PHYLIB

@@ -27,14 +27,14 @@ endef
 ifeq ($(BR2_STATIC_LIBS),)
 define BZIP2_INSTALL_STAGING_SHARED_CMDS
 	$(TARGET_MAKE_ENV) $(MAKE) \
-		LIBDIR="$(BR2_ROOTFS_LIB_DIR)" \
+		LIBDIR="$(ROOTFS_LIB_DIR)" \
 		-f Makefile-libbz2_so PREFIX=$(STAGING_DIR)/usr -C $(@D) install
 endef
 endif
 
 define BZIP2_INSTALL_STAGING_CMDS
 	$(TARGET_MAKE_ENV) $(MAKE) \
-		LIBDIR="$(BR2_ROOTFS_LIB_DIR)" \
+		LIBDIR="$(ROOTFS_LIB_DIR)" \
 		PREFIX=$(STAGING_DIR)/usr -C $(@D) install
 	$(BZIP2_INSTALL_STAGING_SHARED_CMDS)
 endef
@@ -42,7 +42,7 @@ endef
 ifeq ($(BR2_STATIC_LIBS),)
 define BZIP2_INSTALL_TARGET_SHARED_CMDS
 	$(TARGET_MAKE_ENV) $(MAKE) \
-		LIBDIR="$(BR2_ROOTFS_LIB_DIR)" \
+		LIBDIR="$(ROOTFS_LIB_DIR)" \
 		-f Makefile-libbz2_so PREFIX=$(TARGET_DIR)/usr -C $(@D) install
 endef
 endif
@@ -52,7 +52,7 @@ define BZIP2_INSTALL_TARGET_CMDS
 	rm -f $(addprefix $(TARGET_DIR)/usr/bin/,bzip2 bunzip2 bzcat)
 	$(TARGET_MAKE_ENV) $(MAKE) \
 		PREFIX=$(TARGET_DIR)/usr \
-		LIBDIR="$(BR2_ROOTFS_LIB_DIR)" -C $(@D) install
+		LIBDIR="$(ROOTFS_LIB_DIR)" -C $(@D) install
 	$(BZIP2_INSTALL_TARGET_SHARED_CMDS)
 endef
 

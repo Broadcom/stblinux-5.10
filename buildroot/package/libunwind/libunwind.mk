@@ -9,6 +9,7 @@ LIBUNWIND_SITE = http://download.savannah.gnu.org/releases/libunwind
 LIBUNWIND_INSTALL_STAGING = YES
 LIBUNWIND_LICENSE_FILES = COPYING
 LIBUNWIND_LICENSE = MIT
+LIBUNWIND_CPE_ID_VENDOR = libunwind_project
 LIBUNWIND_AUTORECONF = YES
 
 LIBUNWIND_CONF_OPTS = \
@@ -17,7 +18,7 @@ LIBUNWIND_CONF_OPTS = \
 	--disable-minidebuginfo
 
 ifeq ($(BR2_PACKAGE_LIBATOMIC_OPS),y)
-LIBUNWIND_DEPENDENCIES = libatomic_ops
+LIBUNWIND_DEPENDENCIES += libatomic_ops
 endif
 
 $(eval $(autotools-package))
